@@ -1472,21 +1472,31 @@ PatternResult PatternGenerator::generatePattern(FunctionRef func) {
         chunkRanges = blockRanges;
     }
 
-    std::sort(chunkRanges.begin(), chunkRanges.end(),
-              [](const auto& a, const auto& b) { return a.first < b.first; });
+    auto mergeRangeVector = [](std::vector<std::pair<uint64_t, uint64_t>>& ranges) {
+        std::sort(ranges.begin(), ranges.end(),
+                  [](const auto& a, const auto& b) { return a.first < b.first; });
 
-    std::vector<std::pair<uint64_t, uint64_t>> mergedChunkRanges;
-    for (const auto& range : chunkRanges) {
-        if (mergedChunkRanges.empty() || range.first > mergedChunkRanges.back().second) {
-            mergedChunkRanges.push_back(range);
-        } else {
-            mergedChunkRanges.back().second = std::max(mergedChunkRanges.back().second, range.second);
+        std::vector<std::pair<uint64_t, uint64_t>> merged;
+        for (const auto& range : ranges) {
+            if (range.second <= range.first) {
+                continue;
+            }
+
+            if (merged.empty() || range.first > merged.back().second) {
+                merged.push_back(range);
+            } else {
+                merged.back().second = std::max(merged.back().second, range.second);
+            }
         }
-    }
-    chunkRanges = std::move(mergedChunkRanges);
+        ranges = std::move(merged);
+    };
+
+    mergeRangeVector(chunkRanges);
 
     std::sort(blockRanges.begin(), blockRanges.end(),
               [](const auto& a, const auto& b) { return a.first < b.first; });
+
+    auto arch = m_bv->GetDefaultArchitecture();
 
     if (dump) {
         dump->logBasicBlocks(blockRanges);
@@ -1502,7 +1512,6 @@ PatternResult PatternGenerator::generatePattern(FunctionRef func) {
     // 2. hash = MD5(normalized_bytes || mask_bytes)
     std::vector<uint8_t> normalized;
     std::vector<uint8_t> masks;
-    auto arch = m_bv->GetDefaultArchitecture();
 
     // Set function range for the mask generator so it can determine
     // if RIP-relative targets are external references (should be masked)
