@@ -1,4 +1,6 @@
 #include "metadatasidebar.h"
+#include "lumina_codec.h"
+#include "lumina_metadata.h"
 #include "pattern_gen.h"
 #include "lumina_settings.h"
 #include "debug_dump.h"
@@ -6,9 +8,8 @@
 class View;
 #include <QMessageBox>
 #include <QHeaderView>
-#include <QCryptographicHash>
 #include <QProcessEnvironment>
-#include <QSysInfo>
+#include <memory>
 #include <sstream>
 #include <iomanip>
 #include <cstdio>
@@ -18,52 +19,28 @@ class View;
 // Forward declaration
 void extractAndLogLuminaMetadata(BinaryViewRef data, ViewFrame* frame = nullptr);
 
-/**
- * Encode a function for Lumina using the CalcRel hash algorithm.
- *
- * This computes a position-independent hash by normalizing instruction bytes:
- *   normalized_byte = raw_byte & ~mask_byte
- *
- * Where mask_byte indicates position-dependent data (addresses, offsets).
- */
-static lumina::EncodedFunction encodeOneFunction(BinaryViewRef bv, FunctionRef func) {
-	lumina::EncodedFunction ef;
-	ef.name = func->GetSymbol() ? func->GetSymbol()->GetFullName() : std::string("<unnamed>");
+static std::unique_ptr<lumina::Client> createLuminaClient(QObject* parent)
+{
+	QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+	QString host = QString::fromStdString(lumina::getHost());
+	if (env.contains("BN_LUMINA_HOST"))
+		host = env.value("BN_LUMINA_HOST");
 
-	// Compute CalcRel hash using architecture-aware pattern generation
-	lumina::PatternResult pattern = lumina::computePattern(bv, func);
-
-	if (pattern.success) {
-		ef.hash = pattern.hash;
-		ef.func_len = pattern.func_size;
-	} else {
-		// Fallback: zero hash and estimate size from basic blocks
-		ef.hash = std::array<uint8_t, 16>{};
-		auto blocks = func->GetBasicBlocks();
-		uint32_t size = 0;
-		for (auto& b : blocks) {
-			size += static_cast<uint32_t>(b->GetEnd() - b->GetStart());
-		}
-		ef.func_len = size;
-		BinaryNinja::LogWarn("Pattern generation failed for %s: %s",
-			ef.name.c_str(), pattern.error.c_str());
+	quint16 port = lumina::getPort();
+	if (env.contains("BN_LUMINA_PORT"))
+	{
+		bool ok = false;
+		const quint16 envPort = env.value("BN_LUMINA_PORT").toUShort(&ok);
+		if (ok)
+			port = envPort;
 	}
 
-	// TLV payload: no-return flag, comment, variable names
-	const bool noReturn = !func->CanReturn();
-	const std::string comment = func->GetComment();
-	std::vector<std::string> varNames;
-	auto vars = func->GetVariables();
-	varNames.reserve(vars.size());
-	for (auto& vPair : vars) varNames.push_back(vPair.second.name);
-	ef.func_data = lumina::build_function_tlv(noReturn, comment, varNames);
-
-	ef.unk2 = 0;
-	return ef;
-}
-
-static std::array<uint8_t,16> md5_zero() {
-	std::array<uint8_t,16> z{}; return z;
+	return std::make_unique<lumina::Client>(
+		host,
+		port,
+		parent,
+		lumina::useTls(),
+		lumina::verifyTls());
 }
 
 /**
@@ -74,6 +51,27 @@ static std::array<uint8_t,16> md5_zero() {
  */
 static std::array<uint8_t,16> compute_key(BinaryViewRef bv, FunctionRef func) {
 	return lumina::computeCalcRelHash(bv, func);
+}
+
+static lumina::FunctionMetadata parsePulledMetadata(const std::vector<uint8_t>& raw, uint64_t address)
+{
+	lumina::FunctionMetadata metadata = lumina::parseFunctionMetadata(raw);
+	if (!metadata.ok())
+	{
+		for (const auto& error : metadata.errors)
+		{
+			BinaryNinja::LogWarn("[Lumina] Metadata parse issue for 0x%llx: %s",
+				(unsigned long long)address,
+				error.c_str());
+		}
+	}
+	return metadata;
+}
+
+static std::string effectiveFunctionComment(const lumina::FunctionMetadata& metadata)
+{
+	auto comment = metadata.effectiveFunctionComment();
+	return comment ? *comment : std::string();
 }
 
 // FunctionMetadataModel implementation
@@ -296,12 +294,6 @@ void FunctionMetadataTableView::contextMenuEvent(QContextMenuEvent* event)
 	{
 		menu.addAction("Navigate to Function", this, &FunctionMetadataTableView::navigateToFunction);
 		menu.addAction("Apply Metadata", this, &FunctionMetadataTableView::applyMetadataToSelected);
-		menu.addSeparator();
-		// Push Selected
-		menu.addAction("Push Selected (Lumina)", [this]() {
-			auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
-			if (p) p->pushSelectedLumina();
-		});
 	}
 	
 	menu.addAction("Refresh", [this]() { m_model->refresh(); });
@@ -309,11 +301,6 @@ void FunctionMetadataTableView::contextMenuEvent(QContextMenuEvent* event)
 	menu.addAction("Select None", [this]() { m_model->selectNone(); });
 	
 	// Lumina operations
-	menu.addSeparator();
-	menu.addAction("Push All (Lumina)", [this]() {
-		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
-		if (p) p->pushAllLumina();
-	});
 	menu.addSeparator();
 	menu.addAction("Pull Selected (Lumina)", [this]() {
 		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
@@ -442,32 +429,26 @@ FunctionMetadataSidebarWidget::FunctionMetadataSidebarWidget(ViewFrame* frame, B
 
 	m_refreshButton = new QPushButton("Refresh", buttonBar);
 	m_pullSelected = new QPushButton("Pull", buttonBar);
-	m_pushSelected = new QPushButton("Push", buttonBar);
 	m_applyPulled = new QPushButton("Apply", buttonBar);
 	m_pullAll = new QPushButton("Pull All", buttonBar);
-	m_pushAll = new QPushButton("Push All", buttonBar);
 	m_applyPulledAll = new QPushButton("Apply All", buttonBar);
 
 	// Row 0: Main actions for selected
 	buttonLayout->addWidget(m_refreshButton, 0, 0);
 	buttonLayout->addWidget(m_pullSelected, 0, 1);
-	buttonLayout->addWidget(m_pushSelected, 0, 2);
-	buttonLayout->addWidget(m_applyPulled, 0, 3);
+	buttonLayout->addWidget(m_applyPulled, 0, 2);
 
 	// Row 1: Bulk actions for all functions
 	buttonLayout->addWidget(m_pullAll, 1, 1);
-	buttonLayout->addWidget(m_pushAll, 1, 2);
-	buttonLayout->addWidget(m_applyPulledAll, 1, 3);
+	buttonLayout->addWidget(m_applyPulledAll, 1, 2);
 
 	layout->addWidget(buttonBar);
 
 	// Connect buttons
 	connect(m_refreshButton, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::refreshMetadata);
 	connect(m_pullSelected, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::pullSelectedLumina);
-	connect(m_pushSelected, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::pushSelectedLumina);
 	connect(m_applyPulled, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::applyPulledToSelected);
 	connect(m_pullAll, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::pullAllLumina);
-	connect(m_pushAll, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::pushAllLumina);
 	connect(m_applyPulledAll, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::applyPulledToAll);
 
 	setLayout(layout);
@@ -623,13 +604,6 @@ void FunctionMetadataSidebarWidget::refreshMetadata()
 {
 	if (m_model)
 		m_model->refresh();
-	
-	// LUMINA EXTRACTION: Extract and log metadata for current function when Refresh is clicked
-	if (m_data)
-	{
-		BinaryNinja::LogInfo(">>> Refresh button clicked - extracting Lumina metadata...");
-		extractAndLogLuminaMetadata(m_data, m_frame);
-	}
 }
 
 void FunctionMetadataSidebarWidget::rejectAll()
@@ -672,103 +646,6 @@ void FunctionMetadataSidebarWidget::applyAll()
 	QMessageBox::information(this, "Apply All", message);
 }
 
-void FunctionMetadataSidebarWidget::pushSelectedLumina()
-{
-	if (!m_data) { QMessageBox::warning(this, "Lumina Push", "No BinaryView"); return; }
-	auto selected = m_model->getSelectedEntries();
-	if (selected.empty()) { QMessageBox::information(this, "Lumina Push", "No entries selected."); return; }
-
-	// Map address -> FunctionRef
-	std::unordered_map<uint64_t, FunctionRef> fbyAddr;
-	for (auto& f : m_data->GetAnalysisFunctionList()) fbyAddr.emplace(f->GetStart(), f);
-
-	std::vector<lumina::EncodedFunction> funcs;
-	funcs.reserve(selected.size());
-	size_t skippedCount = 0;
-	std::vector<std::string> skippedNames;
-
-	for (auto* e : selected) {
-		auto it = fbyAddr.find(e->address);
-		if (it == fbyAddr.end()) continue;
-
-		// Check if this function should be skipped to prevent Lumina pollution
-		lumina::PushFilterResult filter = lumina::shouldSkipPush(m_data, it->second);
-		if (filter.shouldSkip) {
-			skippedCount++;
-			std::string funcName = it->second->GetSymbol()
-				? it->second->GetSymbol()->GetShortName()
-				: "<unnamed>";
-			skippedNames.push_back(funcName);
-			BinaryNinja::LogWarn("[Lumina] Skipping push for %s: %s (size=%zu, movabs=%d)",
-				funcName.c_str(), filter.reason.c_str(),
-				filter.funcSize, filter.movabsCount);
-			continue;
-		}
-
-		funcs.push_back(encodeOneFunction(m_data, it->second));
-	}
-
-	if (funcs.empty()) {
-		QString msg = "No functions to push.";
-		if (skippedCount > 0) {
-			msg += QString("\n\n%1 function(s) were skipped to prevent Lumina pollution:\n").arg(skippedCount);
-			for (size_t i = 0; i < std::min(skippedNames.size(), (size_t)5); i++) {
-				msg += QString("  - %1\n").arg(QString::fromStdString(skippedNames[i]));
-			}
-			if (skippedNames.size() > 5) {
-				msg += QString("  ... and %1 more\n").arg(skippedNames.size() - 5);
-			}
-			msg += "\n(Functions with size > 4500 bytes or > 4 movabs instructions are filtered)";
-		}
-		QMessageBox::information(this, "Lumina Push", msg);
-		return;
-	}
-
-	// Build legacy Hello + PushMetadata payloads
-	auto hello = lumina::encode_hello_payload(5);
-	std::string idbPath = "<bn>";
-	std::string filePath = "<unknown>";
-	std::string hostName = QSysInfo::machineHostName().toStdString();
-	auto push = lumina::encode_push_payload(/*unk0=*/1, idbPath, filePath, md5_zero(), hostName, funcs, {});  // unk0=1 to match IDA
-
-	// Resolve server from env or defaults
-	QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-	QString host = env.contains("BN_LUMINA_HOST") ? env.value("BN_LUMINA_HOST") : QStringLiteral("127.0.0.1");
-	quint16 port = env.contains("BN_LUMINA_PORT") ? env.value("BN_LUMINA_PORT").toUShort() : 20667;
-
-	lumina::Client cli(host, port, this);
-	QString err;
-	std::vector<uint32_t> statuses;
-	if (!cli.helloAndPush(hello, push, &err, &statuses, 8000)) {
-		QMessageBox::critical(this, "Lumina Push", QString("Failed: %1").arg(err));
-		return;
-	}
-
-	// Report: 1=new unique, 0=updated (per your server)
-	size_t news = 0, updates = 0;
-	for (uint32_t s : statuses) (s > 0 ? news : updates)++;
-
-	QString msg = QString("Pushed %1 function(s): %2 new, %3 updated")
-		.arg(statuses.size()).arg(news).arg(updates);
-	if (skippedCount > 0) {
-		msg += QString("\n\n%1 function(s) were skipped (likely incorrect hash):").arg(skippedCount);
-		for (size_t i = 0; i < std::min(skippedNames.size(), (size_t)3); i++) {
-			msg += QString("\n  - %1").arg(QString::fromStdString(skippedNames[i]));
-		}
-		if (skippedNames.size() > 3) {
-			msg += QString("\n  ... and %1 more").arg(skippedNames.size() - 3);
-		}
-	}
-	QMessageBox::information(this, "Lumina Push", msg);
-}
-
-void FunctionMetadataSidebarWidget::pushAllLumina()
-{
-	// Select all rows, reuse pushSelectedLumina
-	m_model->selectAll();
-	pushSelectedLumina();
-}
-
 void FunctionMetadataSidebarWidget::pullSelectedLumina()
 {
 	if (!m_data) { QMessageBox::warning(this, "Lumina Pull", "No BinaryView"); return; }
@@ -793,20 +670,14 @@ void FunctionMetadataSidebarWidget::pullSelectedLumina()
 	}
 	if (hashes.empty()) { QMessageBox::information(this, "Lumina Pull", "No functions resolved."); return; }
 
-	// Build request
-	auto hello = lumina::encode_hello_payload(5);
-	auto pull = lumina::encode_pull_payload(1, hashes);  // unk0=1 to match IDA
+	const auto hello = lumina::build_hello_request();
+	const auto pull = lumina::build_pull_request(0, hashes);
 
-	// Resolve server (env or default)
-	QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
-	QString host = env.contains("BN_LUMINA_HOST") ? env.value("BN_LUMINA_HOST") : QStringLiteral("127.0.0.1");
-	quint16 port = env.contains("BN_LUMINA_PORT") ? env.value("BN_LUMINA_PORT").toUShort() : 20667;
-
-	lumina::Client cli(host, port, this);
+	auto cli = createLuminaClient(this);
 	QString err;
-	std::vector<uint32_t> statuses;
+	std::vector<lumina::OperationResult> statuses;
 	std::vector<lumina::PulledFunction> funcs;
-	if (!cli.helloAndPull(hello, pull, &err, &statuses, &funcs, 12000)) {
+	if (!cli->helloAndPull(hello, pull, &err, &statuses, &funcs, lumina::getTimeoutMs())) {
 		QMessageBox::critical(this, "Lumina Pull", QString("Failed: %1").arg(err));
 		return;
 	}
@@ -814,17 +685,12 @@ void FunctionMetadataSidebarWidget::pullSelectedLumina()
 	// Map results: statuses length == queries; funcs contains only found entries in order
 	size_t fi = 0, found = 0;
 	for (size_t i = 0; i < statuses.size() && i < addrs.size(); ++i) {
-		if (statuses[i] == 0) {
+		if (statuses[i] == lumina::OperationResult::Ok) {
 			if (fi >= funcs.size()) break;
 			const auto& mf = funcs[fi++];
-			lumina::ParsedTLV tlv;
-			if (!lumina::parse_function_tlv(mf.data, &tlv)) {
-				BinaryNinja::LogWarn("Lumina TLV parse failed for addr 0x%llx", (unsigned long long)addrs[i]);
-				continue;
-			}
 			PullCacheEntry pc;
 			pc.have = true;
-			pc.tlv = std::move(tlv);
+			pc.metadata = parsePulledMetadata(mf.data, addrs[i]);
 			pc.popularity = mf.popularity;
 			pc.len = mf.len;
 			pc.remoteName = mf.name;
@@ -901,14 +767,12 @@ void FunctionMetadataSidebarWidget::pullAllLumina()
 
 	BinaryNinja::LogInfo("[Lumina] Pull All: querying %zu functions...", hashes.size());
 
-	// Build request
-	auto hello = lumina::encode_hello_payload(5);
-	auto pull = lumina::encode_pull_payload(1, hashes);  // unk0=1 to match IDA
+	const auto hello = lumina::build_hello_request();
+	const auto pull = lumina::build_pull_request(0, hashes);
 
-	// Create client from settings
-	std::unique_ptr<lumina::Client> cli(lumina::Client::fromSettings(this));
+	auto cli = createLuminaClient(this);
 	QString err;
-	std::vector<uint32_t> statuses;
+	std::vector<lumina::OperationResult> statuses;
 	std::vector<lumina::PulledFunction> pulledFuncs;
 
 	int timeout = lumina::getTimeoutMs();
@@ -920,17 +784,12 @@ void FunctionMetadataSidebarWidget::pullAllLumina()
 	// Map results to cache
 	size_t fi = 0, found = 0;
 	for (size_t i = 0; i < statuses.size() && i < addrs.size(); ++i) {
-		if (statuses[i] == 0) {
+		if (statuses[i] == lumina::OperationResult::Ok) {
 			if (fi >= pulledFuncs.size()) break;
 			const auto& mf = pulledFuncs[fi++];
-			lumina::ParsedTLV tlv;
-			if (!lumina::parse_function_tlv(mf.data, &tlv)) {
-				BinaryNinja::LogWarn("[Lumina] TLV parse failed for addr 0x%llx", (unsigned long long)addrs[i]);
-				continue;
-			}
 			PullCacheEntry pc;
 			pc.have = true;
-			pc.tlv = std::move(tlv);
+			pc.metadata = parsePulledMetadata(mf.data, addrs[i]);
 			pc.popularity = mf.popularity;
 			pc.len = mf.len;
 			pc.remoteName = mf.name;
@@ -949,7 +808,7 @@ void FunctionMetadataSidebarWidget::pullAllLumina()
 // Helper to apply Lumina metadata to a single function
 // Returns true if any metadata was applied
 static bool applyLuminaMetadata(FunctionRef func, const FunctionMetadataSidebarWidget::PullCacheEntry& cache,
-                                 size_t& namesApplied, size_t& commentsApplied, size_t& noReturnApplied)
+                                 size_t& namesApplied, size_t& commentsApplied)
 {
 	bool applied = false;
 
@@ -978,22 +837,12 @@ static bool applyLuminaMetadata(FunctionRef func, const FunctionMetadataSidebarW
 	}
 
 	// Apply comment if available
-	if (!cache.tlv.comment.empty()) {
+	const std::string remoteComment = effectiveFunctionComment(cache.metadata);
+	if (!remoteComment.empty()) {
 		std::string currentComment = func->GetComment();
-		if (currentComment != cache.tlv.comment) {
-			func->SetComment(cache.tlv.comment);
+		if (currentComment != remoteComment) {
+			func->SetComment(remoteComment);
 			commentsApplied++;
-			applied = true;
-		}
-	}
-
-	// Apply no-return attribute if present
-	if (cache.tlv.hasNoReturn) {
-		bool desiredNoRet = cache.tlv.noReturn;
-		bool currentNoRet = !func->CanReturn();
-		if (desiredNoRet != currentNoRet) {
-			func->SetCanReturn(!desiredNoRet);
-			noReturnApplied++;
 			applied = true;
 		}
 	}
@@ -1015,7 +864,7 @@ void FunctionMetadataSidebarWidget::applyPulledToSelected()
 	for (auto& f : m_data->GetAnalysisFunctionList()) fbyAddr.emplace(f->GetStart(), f);
 
 	size_t applied = 0, missing = 0;
-	size_t namesApplied = 0, commentsApplied = 0, noReturnApplied = 0;
+	size_t namesApplied = 0, commentsApplied = 0;
 
 	for (auto* e : selected) {
 		auto cit = m_pullCache.find(e->address);
@@ -1023,7 +872,7 @@ void FunctionMetadataSidebarWidget::applyPulledToSelected()
 		auto fit = fbyAddr.find(e->address);
 		if (fit == fbyAddr.end()) { missing++; continue; }
 
-		if (applyLuminaMetadata(fit->second, cit->second, namesApplied, commentsApplied, noReturnApplied)) {
+		if (applyLuminaMetadata(fit->second, cit->second, namesApplied, commentsApplied)) {
 			applied++;
 		}
 	}
@@ -1036,7 +885,6 @@ void FunctionMetadataSidebarWidget::applyPulledToSelected()
 	QString details;
 	if (namesApplied > 0) details += QString("%1 renamed, ").arg(namesApplied);
 	if (commentsApplied > 0) details += QString("%1 comments, ").arg(commentsApplied);
-	if (noReturnApplied > 0) details += QString("%1 no-return, ").arg(noReturnApplied);
 	if (details.endsWith(", ")) details.chop(2);
 
 	QMessageBox::information(this, "Apply Pulled",
@@ -1060,14 +908,14 @@ void FunctionMetadataSidebarWidget::applyPulledToAll()
 	for (auto& f : m_data->GetAnalysisFunctionList()) fbyAddr.emplace(f->GetStart(), f);
 
 	size_t applied = 0, skipped = 0;
-	size_t namesApplied = 0, commentsApplied = 0, noReturnApplied = 0;
+	size_t namesApplied = 0, commentsApplied = 0;
 
 	for (const auto& [addr, cache] : m_pullCache) {
 		if (!cache.have) { skipped++; continue; }
 		auto fit = fbyAddr.find(addr);
 		if (fit == fbyAddr.end()) { skipped++; continue; }
 
-		if (applyLuminaMetadata(fit->second, cache, namesApplied, commentsApplied, noReturnApplied)) {
+		if (applyLuminaMetadata(fit->second, cache, namesApplied, commentsApplied)) {
 			applied++;
 		}
 	}
@@ -1080,11 +928,10 @@ void FunctionMetadataSidebarWidget::applyPulledToAll()
 	QString details;
 	if (namesApplied > 0) details += QString("%1 renamed, ").arg(namesApplied);
 	if (commentsApplied > 0) details += QString("%1 comments, ").arg(commentsApplied);
-	if (noReturnApplied > 0) details += QString("%1 no-return, ").arg(noReturnApplied);
 	if (details.endsWith(", ")) details.chop(2);
 
-	BinaryNinja::LogInfo("[Lumina] Applied metadata to %zu functions (%zu names, %zu comments, %zu no-return)",
-		applied, namesApplied, commentsApplied, noReturnApplied);
+	BinaryNinja::LogInfo("[Lumina] Applied metadata to %zu functions (%zu names, %zu comments)",
+		applied, namesApplied, commentsApplied);
 
 	QMessageBox::information(this, "Apply All",
 		QString("Applied Lumina metadata to %1 function(s)%2.")
@@ -1119,13 +966,10 @@ void FunctionMetadataSidebarWidget::batchDiffAndApplySelected()
 		row.localName = QString::fromStdString(func->GetSymbol() ? func->GetSymbol()->GetFullName() : std::string("<unnamed>"));
 		row.remoteName = QString::fromStdString(cit->second.remoteName);
 		row.localComment = QString::fromStdString(func->GetComment());
-		row.remoteComment = QString::fromStdString(cit->second.tlv.comment);
-		row.localNoRet = !func->CanReturn();
-		row.remoteNoRet = cit->second.tlv.hasNoReturn ? cit->second.tlv.noReturn : row.localNoRet;
+		row.remoteComment = QString::fromStdString(effectiveFunctionComment(cit->second.metadata));
 
 		// default: check only when different
 		row.applyComment  = (row.localComment != row.remoteComment);
-		row.applyNoReturn = (row.localNoRet  != row.remoteNoRet);
 		rows.push_back(std::move(row));
 	}
 
@@ -1149,10 +993,6 @@ void FunctionMetadataSidebarWidget::batchDiffAndApplySelected()
 		bool changed = false;
 		if (r.applyComment && (r.localComment != r.remoteComment)) {
 			func->SetComment(r.remoteComment.toStdString());
-			changed = true;
-		}
-		if (r.applyNoReturn && (r.localNoRet != r.remoteNoRet)) {
-			func->SetCanReturn(!r.remoteNoRet);
 			changed = true;
 		}
 		if (changed) applied++;
@@ -1207,9 +1047,9 @@ void extractAndLogLuminaMetadata(BinaryViewRef data, ViewFrame* frame)
 			func = currentView->getCurrentFunction();
 			funcStart = func->GetStart();
 			fprintf(stderr, "\n=== LUMINA METADATA EXTRACTION FOR CURRENT FUNCTION ===\n");
-			fprintf(stderr, "Function Address: 0x%lx\n", funcStart);
+			fprintf(stderr, "Function Address: 0x%llx\n", (unsigned long long)funcStart);
 			BinaryNinja::LogInfo("=== LUMINA METADATA EXTRACTION FOR CURRENT FUNCTION ===");
-			BinaryNinja::LogInfo("Function Address: 0x%lx", funcStart);
+			BinaryNinja::LogInfo("Function Address: 0x%llx", (unsigned long long)funcStart);
 		}
 		else
 		{
@@ -1217,9 +1057,9 @@ void extractAndLogLuminaMetadata(BinaryViewRef data, ViewFrame* frame)
 			func = functions[0];
 			funcStart = func->GetStart();
 			fprintf(stderr, "\n=== LUMINA METADATA EXTRACTION FOR FIRST FUNCTION (no current function) ===\n");
-			fprintf(stderr, "Function Address: 0x%lx\n", funcStart);
+			fprintf(stderr, "Function Address: 0x%llx\n", (unsigned long long)funcStart);
 			BinaryNinja::LogInfo("=== LUMINA METADATA EXTRACTION FOR FIRST FUNCTION (no current function) ===");
-			BinaryNinja::LogInfo("Function Address: 0x%lx", funcStart);
+			BinaryNinja::LogInfo("Function Address: 0x%llx", (unsigned long long)funcStart);
 		}
 	}
 	else
@@ -1228,9 +1068,9 @@ void extractAndLogLuminaMetadata(BinaryViewRef data, ViewFrame* frame)
 		func = functions[0];
 		funcStart = func->GetStart();
 		fprintf(stderr, "\n=== LUMINA METADATA EXTRACTION FOR FIRST FUNCTION (no frame) ===\n");
-		fprintf(stderr, "Function Address: 0x%lx\n", funcStart);
+		fprintf(stderr, "Function Address: 0x%llx\n", (unsigned long long)funcStart);
 		BinaryNinja::LogInfo("=== LUMINA METADATA EXTRACTION FOR FIRST FUNCTION (no frame) ===");
-		BinaryNinja::LogInfo("Function Address: 0x%lx", funcStart);
+		BinaryNinja::LogInfo("Function Address: 0x%llx", (unsigned long long)funcStart);
 	}
 	
 	// 1. FUNCTION IDENTITY
@@ -1238,23 +1078,23 @@ void extractAndLogLuminaMetadata(BinaryViewRef data, ViewFrame* frame)
 	std::string funcName = symbol ? symbol->GetFullName() : "<unnamed>";
 	fprintf(stderr, "\n[1] FUNCTION IDENTITY:\n");
 	fprintf(stderr, "  Name: %s\n", funcName.c_str());
-	fprintf(stderr, "  Start: 0x%lx\n", funcStart);
+	fprintf(stderr, "  Start: 0x%llx\n", (unsigned long long)funcStart);
 	uint64_t funcSize = func->GetHighestAddress() - funcStart;
-	fprintf(stderr, "  Size: %lu bytes (approx)\n", funcSize);
+	fprintf(stderr, "  Size: %llu bytes (approx)\n", (unsigned long long)funcSize);
 	
 	BinaryNinja::LogInfo("[1] FUNCTION IDENTITY:");
 	BinaryNinja::LogInfo("  Name: %s", funcName.c_str());
-	BinaryNinja::LogInfo("  Start: 0x%lx", funcStart);
-	BinaryNinja::LogInfo("  Size: %lu bytes (approx)", funcSize);
+	BinaryNinja::LogInfo("  Start: 0x%llx", (unsigned long long)funcStart);
+	BinaryNinja::LogInfo("  Size: %llu bytes (approx)", (unsigned long long)funcSize);
 	
-	// 2. FUNCTION TYPE INFO (Tag 1)
-	fprintf(stderr, "\n[2] FUNCTION TYPE INFO (TLV Tag 1):\n");
+	// 2. FUNCTION TYPE INFO
+	fprintf(stderr, "\n[2] FUNCTION TYPE INFO:\n");
 	fprintf(stderr, "  No-return flag: %s\n", func->CanReturn() ? "false" : "true");
-	BinaryNinja::LogInfo("[2] FUNCTION TYPE INFO (TLV Tag 1):");
+	BinaryNinja::LogInfo("[2] FUNCTION TYPE INFO:");
 	BinaryNinja::LogInfo("  No-return flag: %s", func->CanReturn() ? "false" : "true");
 	
-	// 3. FUNCTION COMMENTS (Tags 3, 4)
-	fprintf(stderr, "\n[3] FUNCTION COMMENTS (TLV Tags 3, 4):\n");
+	// 3. FUNCTION COMMENTS
+	fprintf(stderr, "\n[3] FUNCTION COMMENTS:\n");
 	std::string funcComment = func->GetComment();
 	if (!funcComment.empty())
 	{
@@ -1278,17 +1118,23 @@ void extractAndLogLuminaMetadata(BinaryViewRef data, ViewFrame* frame)
 	{
 		auto block = blocks[i];
 		uint64_t blockSize = block->GetEnd() - block->GetStart();
-		fprintf(stderr, "    Block %zu: 0x%lx - 0x%lx (%lu bytes)\n",
-		        i, block->GetStart(), block->GetEnd(), blockSize);
-		BinaryNinja::LogInfo("    Block %zu: 0x%lx - 0x%lx (%lu bytes)",
-		        i, block->GetStart(), block->GetEnd(), blockSize);
+		fprintf(stderr, "    Block %zu: 0x%llx - 0x%llx (%llu bytes)\n",
+		        i,
+		        (unsigned long long)block->GetStart(),
+		        (unsigned long long)block->GetEnd(),
+		        (unsigned long long)blockSize);
+		BinaryNinja::LogInfo("    Block %zu: 0x%llx - 0x%llx (%llu bytes)",
+		        i,
+		        (unsigned long long)block->GetStart(),
+		        (unsigned long long)block->GetEnd(),
+		        (unsigned long long)blockSize);
 	}
 	
 	// 5. VARIABLES
-	fprintf(stderr, "\n[5] STACK FRAME / VARIABLES (TLV Tag 9):\n");
+	fprintf(stderr, "\n[5] STACK FRAME / VARIABLES:\n");
 	auto vars = func->GetVariables();
 	fprintf(stderr, "  Variable count: %zu\n", vars.size());
-	BinaryNinja::LogInfo("[5] STACK FRAME / VARIABLES (TLV Tag 9):");
+	BinaryNinja::LogInfo("[5] STACK FRAME / VARIABLES:");
 	BinaryNinja::LogInfo("  Variable count: %zu", vars.size());
 	
 	// 6. CROSS REFERENCES
@@ -1392,67 +1238,13 @@ void extractAndLogLuminaMetadata(BinaryViewRef data, ViewFrame* frame)
 		BinaryNinja::LogInfo("  Pattern generation failed: %s", pattern.error.c_str());
 	}
 
-	// 9. ENCODED TLV PAYLOAD
-	fprintf(stderr, "\n[9] ENCODED TLV PAYLOAD:\n");
-	BinaryNinja::LogInfo("[9] ENCODED TLV PAYLOAD:");
-
-	auto encodedFunc = encodeOneFunction(data, func);
-	const auto& payload = encodedFunc.func_data;
-
-	if (!payload.empty())
-	{
-		fprintf(stderr, "  Payload size: %zu bytes\n", payload.size());
-		fprintf(stderr, "  Hexdump:\n");
-		BinaryNinja::LogInfo("  Payload size: %zu bytes", payload.size());
-		BinaryNinja::LogInfo("  Hexdump:");
-
-		// Print hexdump in standard format: offset | hex bytes | ASCII
-		const size_t bytesPerLine = 16;
-		for (size_t i = 0; i < payload.size(); i += bytesPerLine)
-		{
-			// Print offset
-			char line[256];
-			int pos = snprintf(line, sizeof(line), "    %08zx  ", i);
-
-			// Print hex bytes
-			size_t lineEnd = std::min(i + bytesPerLine, payload.size());
-			for (size_t j = i; j < lineEnd; j++)
-			{
-				pos += snprintf(line + pos, sizeof(line) - pos, "%02x ", payload[j]);
-				if ((j - i) == 7) // Extra space in the middle
-				{
-					pos += snprintf(line + pos, sizeof(line) - pos, " ");
-				}
-			}
-
-			// Pad if incomplete line
-			for (size_t j = lineEnd; j < i + bytesPerLine; j++)
-			{
-				pos += snprintf(line + pos, sizeof(line) - pos, "   ");
-				if ((j - i) == 7)
-				{
-					pos += snprintf(line + pos, sizeof(line) - pos, " ");
-				}
-			}
-
-			// Print ASCII representation
-			pos += snprintf(line + pos, sizeof(line) - pos, " |");
-			for (size_t j = i; j < lineEnd; j++)
-			{
-				unsigned char c = payload[j];
-				pos += snprintf(line + pos, sizeof(line) - pos, "%c", (c >= 32 && c <= 126) ? c : '.');
-			}
-			pos += snprintf(line + pos, sizeof(line) - pos, "|");
-
-			fprintf(stderr, "%s\n", line);
-			BinaryNinja::LogInfo("%s", line);
-		}
-	}
-	else
-	{
-		fprintf(stderr, "  No payload data\n");
-		BinaryNinja::LogInfo("  No payload data");
-	}
+	// 9. PUSH ENCODING STATUS
+	fprintf(stderr, "\n[9] PUSH ENCODING STATUS:\n");
+	fprintf(stderr, "  Push support is intentionally disabled in this plugin.\n");
+	fprintf(stderr, "  Local Binary Ninja metadata is not serialized for Lumina upload.\n");
+	BinaryNinja::LogInfo("[9] PUSH ENCODING STATUS:");
+	BinaryNinja::LogInfo("  Push support is intentionally disabled in this plugin.");
+	BinaryNinja::LogInfo("  Local Binary Ninja metadata is not serialized for Lumina upload.");
 
 	fprintf(stderr, "\n=== END LUMINA METADATA EXTRACTION ===\n");
 	fprintf(stderr, "Plugin successfully extracted basic Lumina-relevant metadata\n");
@@ -1517,14 +1309,12 @@ static void autoQueryLumina(BinaryView* view)
 		lumina::getPort(),
 		lumina::useTls() ? "yes" : "no");
 
-	// Build request
-	auto hello = lumina::encode_hello_payload(5);
-	auto pull = lumina::encode_pull_payload(1, hashes);  // unk0=1 to match IDA
+	const auto hello = lumina::build_hello_request();
+	const auto pull = lumina::build_pull_request(0, hashes);
 
-	// Create client from settings
-	std::unique_ptr<lumina::Client> cli(lumina::Client::fromSettings(nullptr));
+	auto cli = createLuminaClient(nullptr);
 	QString err;
-	std::vector<uint32_t> statuses;
+	std::vector<lumina::OperationResult> statuses;
 	std::vector<lumina::PulledFunction> pulledFuncs;
 
 	int timeout = lumina::getTimeoutMs();
@@ -1538,46 +1328,40 @@ static void autoQueryLumina(BinaryView* view)
 	size_t fi = 0, applied = 0;
 	for (size_t i = 0; i < statuses.size() && i < addrs.size(); ++i)
 	{
-		if (statuses[i] == 0 && fi < pulledFuncs.size())
+		if (statuses[i] == lumina::OperationResult::Ok && fi < pulledFuncs.size())
 		{
 			const auto& pf = pulledFuncs[fi++];
 			FunctionRef func = funcRefs[i];
 
-			// Parse TLV and apply metadata
-			lumina::ParsedTLV tlv;
-			if (lumina::parse_function_tlv(pf.data, &tlv))
+			const auto metadata = parsePulledMetadata(pf.data, func->GetStart());
+			bool changed = false;
+
+			if (!pf.name.empty())
 			{
-				bool changed = false;
-
-				// Apply function name if we have one and current is unnamed
-				if (!pf.name.empty())
+				auto sym = func->GetSymbol();
+				std::string currentName = sym ? sym->GetFullName() : "";
+				if (currentName.empty() || currentName.find("sub_") == 0)
 				{
-					auto sym = func->GetSymbol();
-					std::string currentName = sym ? sym->GetFullName() : "";
-					if (currentName.empty() || currentName.find("sub_") == 0)
-					{
-						// Create a new symbol with the Lumina name
-						BinaryNinja::Symbol* newSym = new BinaryNinja::Symbol(
-							BNSymbolType::FunctionSymbol,
-							pf.name,
-							func->GetStart());
-						view->DefineUserSymbol(newSym);
-						changed = true;
-						BinaryNinja::LogInfo("[Lumina] Renamed 0x%llx to %s",
-							(unsigned long long)func->GetStart(), pf.name.c_str());
-					}
-				}
-
-				// Apply comment
-				if (!tlv.comment.empty() && func->GetComment().empty())
-				{
-					func->SetComment(tlv.comment);
+					BinaryNinja::Symbol* newSym = new BinaryNinja::Symbol(
+						BNSymbolType::FunctionSymbol,
+						pf.name,
+						func->GetStart());
+					view->DefineUserSymbol(newSym);
 					changed = true;
+					BinaryNinja::LogInfo("[Lumina] Renamed 0x%llx to %s",
+						(unsigned long long)func->GetStart(), pf.name.c_str());
 				}
-
-				if (changed)
-					applied++;
 			}
+
+			const std::string remoteComment = effectiveFunctionComment(metadata);
+			if (!remoteComment.empty() && func->GetComment().empty())
+			{
+				func->SetComment(remoteComment);
+				changed = true;
+			}
+
+			if (changed)
+				applied++;
 		}
 	}
 
@@ -1682,4 +1466,3 @@ extern "C"
 		return true;
 	}
 }
-

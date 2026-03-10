@@ -13,7 +13,6 @@ constexpr const char* SETTING_PORT = "lumina.server.port";
 constexpr const char* SETTING_USE_TLS = "lumina.server.useTls";
 constexpr const char* SETTING_VERIFY_TLS = "lumina.server.verifyTls";
 constexpr const char* SETTING_AUTO_QUERY = "lumina.autoQueryOnAnalysis";
-constexpr const char* SETTING_AUTO_PUSH = "lumina.autoPushOnAnalysis";
 constexpr const char* SETTING_TIMEOUT = "lumina.timeout";
 
 // Register all Lumina settings with Binary Ninja
@@ -25,7 +24,6 @@ uint16_t getPort();
 bool useTls();
 bool verifyTls();
 bool autoQueryOnAnalysis();
-bool autoPushOnAnalysis();
 int getTimeoutMs();
 
 } // namespace lumina

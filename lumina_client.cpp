@@ -281,57 +281,6 @@ bool Client::decodeRpcFail(const std::vector<uint8_t>& payload, QString* err)
     return true;
 }
 
-bool Client::helloAndPush(
-    const HelloRequest& helloRequest,
-    const PushMetadataRequest& pushRequest,
-    QString* err,
-    std::vector<OperationResult>* outStatuses,
-    int timeoutMs)
-{
-    auto socket = createSocket(err, timeoutMs);
-    if (!socket)
-        return false;
-
-    if (!performHello(*socket, helloRequest, err, timeoutMs))
-        return false;
-
-    if (!writePacket(*socket, PacketType::PushMetadata, serialize_payload(pushRequest), err, timeoutMs))
-        return false;
-
-    PacketType responseType = PacketType::RpcFail;
-    std::vector<uint8_t> payload;
-    do
-    {
-        if (!readPacket(*socket, &responseType, &payload, err, timeoutMs))
-            return false;
-    } while (responseType == PacketType::RpcNotify);
-
-    if (responseType == PacketType::RpcFail)
-    {
-        decodeRpcFail(payload, err);
-        return false;
-    }
-
-    if (responseType != PacketType::PushMetadataResult)
-    {
-        if (err != nullptr)
-            *err = QStringLiteral("Unexpected push response type %1").arg(packetTypeString(responseType));
-        return false;
-    }
-
-    PushMetadataResult result;
-    if (!deserialize_payload(payload, &result))
-    {
-        if (err != nullptr)
-            *err = QStringLiteral("Malformed push response");
-        return false;
-    }
-
-    if (outStatuses != nullptr)
-        *outStatuses = std::move(result.codes);
-    return true;
-}
-
 bool Client::helloAndPull(
     const HelloRequest& helloRequest,
     const PullMetadataRequest& pullRequest,

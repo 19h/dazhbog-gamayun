@@ -10,14 +10,6 @@
 
 namespace lumina {
 
-struct EncodedFunction {
-    std::string name;
-    uint32_t func_len = 0;
-    std::vector<uint8_t> func_data;
-    std::array<uint8_t, kMd5HashSize> hash{};
-    uint64_t address = 0;
-};
-
 extern "C" {
     char* BNGetVersionString(void);
     uint32_t BNGetBuildId(void);
@@ -69,37 +61,6 @@ inline PullMetadataRequest build_pull_request(
     request.patternIds.reserve(hashes.size());
     for (const auto& hash : hashes)
         request.patternIds.push_back(PatternId::fromHash(hash));
-    return request;
-}
-
-inline PushMetadataRequest build_push_request(
-    uint32_t flags,
-    const std::string& idbPath,
-    const std::string& filePath,
-    const std::array<uint8_t, kMd5HashSize>& md5OfBinary,
-    const std::string& hostName,
-    const std::vector<EncodedFunction>& funcs)
-{
-    PushMetadataRequest request;
-    request.flags = flags;
-    request.idb = idbPath;
-    request.input.path = filePath;
-    request.input.md5 = md5OfBinary;
-    request.hostname = hostName;
-    request.contents.reserve(funcs.size());
-    request.ea64s.reserve(funcs.size());
-
-    for (const auto& func : funcs)
-    {
-        FunctionInfoAndPattern entry;
-        entry.info.name = func.name;
-        entry.info.size = func.func_len;
-        entry.info.metadata = func.func_data;
-        entry.patternId = PatternId::fromHash(func.hash);
-        request.contents.push_back(std::move(entry));
-        request.ea64s.push_back(func.address);
-    }
-
     return request;
 }
 

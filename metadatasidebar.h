@@ -7,6 +7,7 @@
 #include <QtWidgets/QHBoxLayout>
 #include <QtWidgets/QHeaderView>
 #include <QtWidgets/QMenu>
+#include <map>
 #include <unordered_map>
 #include "binaryninjaapi.h"
 #include "sidebarwidget.h"
@@ -14,8 +15,7 @@
 #include "fontsettings.h"
 #include "theme.h"
 #include "lumina_client.h"
-#include "lumina_codec.h"
-#include "tlv_builder.h"
+#include "lumina_metadata.h"
 #include "bulkdiffdialog.h"
 
 using namespace BinaryNinja;
@@ -96,18 +96,16 @@ class FunctionMetadataSidebarWidget : public SidebarWidget
 	QPushButton* m_rejectAllButton;
 	QPushButton* m_applySelectedButton;
 	QPushButton* m_applyAllButton;
-	QPushButton* m_pushSelected;
-	QPushButton* m_pushAll;
 	QPushButton* m_pullSelected;
 	QPushButton* m_pullAll;
 	QPushButton* m_applyPulled;
 	QPushButton* m_applyPulledAll;
 
 public:
-	// Cache pulled TLV decoded per function start address (public for helper access)
+	// Cache pulled Lumina metadata per function start address.
 	struct PullCacheEntry {
 		bool have = false;
-		lumina::ParsedTLV tlv;
+		lumina::FunctionMetadata metadata;
 		uint32_t popularity = 0;
 		uint32_t len = 0;
 		std::string remoteName;
@@ -132,8 +130,6 @@ public Q_SLOTS:
 	void rejectAll();
 	void applySelected();
 	void applyAll();
-	void pushSelectedLumina();
-	void pushAllLumina();
 	void pullSelectedLumina();
 	void pullAllLumina();
 	void applyPulledToSelected();
@@ -161,4 +157,3 @@ public:
 		return RightContent;
 	}
 };
-

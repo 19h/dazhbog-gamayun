@@ -56,17 +56,8 @@ void registerSettings()
         "\"description\": \"Automatically query Lumina after initial analysis completes\""
         "}");
 
-    // Auto-push after analysis
-    settings->RegisterSetting(SETTING_AUTO_PUSH,
-        "{"
-        "\"title\": \"Auto-Push After Analysis\","
-        "\"type\": \"boolean\","
-        "\"default\": false,"
-        "\"description\": \"Automatically push metadata to Lumina after initial analysis\""
-        "}");
-
-    // Connection timeout
-    settings->RegisterSetting(SETTING_TIMEOUT,
+	// Connection timeout
+	settings->RegisterSetting(SETTING_TIMEOUT,
         "{"
         "\"title\": \"Connection Timeout (ms)\","
         "\"type\": \"number\","
@@ -101,12 +92,7 @@ bool verifyTls()
 
 bool autoQueryOnAnalysis()
 {
-    return BinaryNinja::Settings::Instance()->Get<bool>(SETTING_AUTO_QUERY);
-}
-
-bool autoPushOnAnalysis()
-{
-    return BinaryNinja::Settings::Instance()->Get<bool>(SETTING_AUTO_PUSH);
+	return BinaryNinja::Settings::Instance()->Get<bool>(SETTING_AUTO_QUERY);
 }
 
 int getTimeoutMs()

@@ -42,13 +42,6 @@ public:
 
     static Client* fromSettings(QObject* parent = nullptr);
 
-    bool helloAndPush(
-        const HelloRequest& helloRequest,
-        const PushMetadataRequest& pushRequest,
-        QString* err,
-        std::vector<OperationResult>* outStatuses,
-        int timeoutMs = 5000);
-
     bool helloAndPull(
         const HelloRequest& helloRequest,
         const PullMetadataRequest& pullRequest,
