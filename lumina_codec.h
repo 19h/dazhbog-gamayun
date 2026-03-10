@@ -38,7 +38,8 @@ inline std::vector<uint8_t> build_client_key_bytes()
 
 inline std::array<uint8_t, 6> build_client_license_id()
 {
-    return {};
+    // Sentinel read-only license ID for the dazhbog server.
+    return {0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00};
 }
 
 inline HelloRequest build_hello_request(uint32_t protocolVersion = kProtocolVersion)

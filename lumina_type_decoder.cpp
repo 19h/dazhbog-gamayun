@@ -1950,6 +1950,30 @@ TypeDeclResult decodeTinfoDecl(const std::vector<uint8_t>& typeBytes, const std:
     return result;
 }
 
+TypeDeclResult decodeTinfoDeclWithName(
+    const std::vector<uint8_t>& typeBytes,
+    const std::vector<uint8_t>& fieldsBytes,
+    const std::string& name)
+{
+    TypeDeclResult result;
+    if (typeBytes.empty())
+    {
+        result.error = "empty type string";
+        return result;
+    }
+
+    Decoder decoder(typeBytes, fieldsBytes);
+    auto type = decoder.parseType();
+    if (!type)
+    {
+        result.error = decoder.error().value_or("type decode failed");
+        return result;
+    }
+
+    result.declaration = type->render(name);
+    return result;
+}
+
 std::string escapeBytes(const std::vector<uint8_t>& bytes)
 {
     return escapeBytesImpl(bytes);

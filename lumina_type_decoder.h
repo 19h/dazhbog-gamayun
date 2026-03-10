@@ -14,6 +14,10 @@ struct TypeDeclResult {
 };
 
 TypeDeclResult decodeTinfoDecl(const std::vector<uint8_t>& typeBytes, const std::vector<uint8_t>& fieldsBytes);
+TypeDeclResult decodeTinfoDeclWithName(
+    const std::vector<uint8_t>& typeBytes,
+    const std::vector<uint8_t>& fieldsBytes,
+    const std::string& name);
 std::string escapeBytes(const std::vector<uint8_t>& bytes);
 
 }  // namespace lumina
