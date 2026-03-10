@@ -39,6 +39,8 @@ add_library(function_metadata_sidebar SHARED
     lumina_client.cpp
     lumina_client.h
     lumina_codec.h
+    lumina_protocol.cpp
+    lumina_protocol.h
     tlv_builder.h
     pattern_gen.cpp
     pattern_gen.h
