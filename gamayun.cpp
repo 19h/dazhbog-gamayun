@@ -1,4 +1,4 @@
-#include "metadatasidebar.h"
+#include "gamayun.h"
 #include "lumina_codec.h"
 #include "lumina_metadata.h"
 #include "lumina_type_decoder.h"
@@ -77,7 +77,7 @@ static lumina::FunctionMetadata parsePulledMetadata(const std::vector<uint8_t>& 
 
 static std::string formatPulledMetadataReport(
 	uint64_t address,
-	const FunctionMetadataSidebarWidget::PullCacheEntry& cache)
+	const GamayunWidget::PullCacheEntry& cache)
 {
 	std::ostringstream out;
 	out << "Address: 0x" << std::hex << std::uppercase << address << std::dec << "\n";
@@ -476,14 +476,14 @@ static std::string formatOperandRepresentationTagData(const lumina::InstructionO
 	return out.str();
 }
 
-// FunctionMetadataModel implementation
-FunctionMetadataModel::FunctionMetadataModel(QWidget* parent, BinaryViewRef data)
+// GamayunModel implementation
+GamayunModel::GamayunModel(QWidget* parent, BinaryViewRef data)
 	: QAbstractTableModel(parent), m_data(data)
 {
 	refresh();
 }
 
-void FunctionMetadataModel::refresh()
+void GamayunModel::refresh()
 {
 	beginResetModel();
 	m_entries.clear();
@@ -499,7 +499,7 @@ void FunctionMetadataModel::refresh()
 	
 	for (auto& func : functions)
 	{
-		FunctionMetadataEntry entry;
+		GamayunEntry entry;
 		entry.address = func->GetStart();
 		auto sym = func->GetSymbol();
 		entry.name = QString::fromStdString(sym ? sym->GetFullName() : "<unnamed>");
@@ -531,21 +531,21 @@ void FunctionMetadataModel::refresh()
 	endResetModel();
 }
 
-int FunctionMetadataModel::columnCount(const QModelIndex& parent) const
+int GamayunModel::columnCount(const QModelIndex& parent) const
 {
 	if (parent.isValid())
 		return 0;
 	return 4; // Checkbox, Address, Name, Metadata Keys
 }
 
-int FunctionMetadataModel::rowCount(const QModelIndex& parent) const
+int GamayunModel::rowCount(const QModelIndex& parent) const
 {
 	if (parent.isValid())
 		return 0;
 	return m_entries.size();
 }
 
-QVariant FunctionMetadataModel::data(const QModelIndex& index, int role) const
+QVariant GamayunModel::data(const QModelIndex& index, int role) const
 {
 	if (!index.isValid() || index.row() >= (int)m_entries.size())
 		return QVariant();
@@ -583,7 +583,7 @@ QVariant FunctionMetadataModel::data(const QModelIndex& index, int role) const
 	return QVariant();
 }
 
-QVariant FunctionMetadataModel::headerData(int section, Qt::Orientation orientation, int role) const
+QVariant GamayunModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
 	if (orientation == Qt::Horizontal && role == Qt::DisplayRole)
 	{
@@ -598,7 +598,7 @@ QVariant FunctionMetadataModel::headerData(int section, Qt::Orientation orientat
 	return QVariant();
 }
 
-Qt::ItemFlags FunctionMetadataModel::flags(const QModelIndex& index) const
+Qt::ItemFlags GamayunModel::flags(const QModelIndex& index) const
 {
 	if (!index.isValid())
 		return Qt::NoItemFlags;
@@ -611,7 +611,7 @@ Qt::ItemFlags FunctionMetadataModel::flags(const QModelIndex& index) const
 	return flags;
 }
 
-bool FunctionMetadataModel::setData(const QModelIndex& index, const QVariant& value, int role)
+bool GamayunModel::setData(const QModelIndex& index, const QVariant& value, int role)
 {
 	if (!index.isValid() || index.row() >= (int)m_entries.size())
 		return false;
@@ -626,7 +626,7 @@ bool FunctionMetadataModel::setData(const QModelIndex& index, const QVariant& va
 	return false;
 }
 
-void FunctionMetadataModel::selectAll()
+void GamayunModel::selectAll()
 {
 	for (auto& entry : m_entries)
 		entry.selected = true;
@@ -634,7 +634,7 @@ void FunctionMetadataModel::selectAll()
 		emit dataChanged(createIndex(0, 0), createIndex(int(m_entries.size()) - 1, 0));
 }
 
-void FunctionMetadataModel::selectNone()
+void GamayunModel::selectNone()
 {
 	for (auto& entry : m_entries)
 		entry.selected = false;
@@ -642,9 +642,9 @@ void FunctionMetadataModel::selectNone()
 		emit dataChanged(createIndex(0, 0), createIndex(int(m_entries.size()) - 1, 0));
 }
 
-std::vector<FunctionMetadataEntry*> FunctionMetadataModel::getSelectedEntries()
+std::vector<GamayunEntry*> GamayunModel::getSelectedEntries()
 {
-	std::vector<FunctionMetadataEntry*> selected;
+	std::vector<GamayunEntry*> selected;
 	for (auto& entry : m_entries)
 	{
 		if (entry.selected)
@@ -653,11 +653,11 @@ std::vector<FunctionMetadataEntry*> FunctionMetadataModel::getSelectedEntries()
 	return selected;
 }
 
-// FunctionMetadataTableView implementation
-FunctionMetadataTableView::FunctionMetadataTableView(QWidget* parent, ViewFrame* frame, BinaryViewRef data)
+// GamayunTableView implementation
+GamayunTableView::GamayunTableView(QWidget* parent, ViewFrame* frame, BinaryViewRef data)
 	: QTableView(parent), m_data(data), m_frame(frame)
 {
-	m_model = new FunctionMetadataModel(this, data);
+	m_model = new GamayunModel(this, data);
 	setModel(m_model);
 	
 	// Configure table appearance
@@ -676,26 +676,26 @@ FunctionMetadataTableView::FunctionMetadataTableView(QWidget* parent, ViewFrame*
 	
 	updateFont();
 
-	connect(this, &QTableView::doubleClicked, this, &FunctionMetadataTableView::onRowDoubleClicked);
+	connect(this, &QTableView::doubleClicked, this, &GamayunTableView::onRowDoubleClicked);
 
 	// Connect clicked signal to print CalcRel hash when a row is clicked
-	connect(this, &QTableView::clicked, this, &FunctionMetadataTableView::onRowClicked);
+	connect(this, &QTableView::clicked, this, &GamayunTableView::onRowClicked);
 }
 
-void FunctionMetadataTableView::updateFont()
+void GamayunTableView::updateFont()
 {
 	setFont(getMonospaceFont(this));
 }
 
-void FunctionMetadataTableView::contextMenuEvent(QContextMenuEvent* event)
+void GamayunTableView::contextMenuEvent(QContextMenuEvent* event)
 {
 	QMenu menu(this);
 	
 	QModelIndex index = indexAt(event->pos());
 	if (index.isValid())
 	{
-		menu.addAction("Navigate to Function", this, &FunctionMetadataTableView::navigateToFunction);
-		menu.addAction("Apply Metadata", this, &FunctionMetadataTableView::applyMetadataToSelected);
+		menu.addAction("Navigate to Function", this, &GamayunTableView::navigateToFunction);
+		menu.addAction("Apply Metadata", this, &GamayunTableView::applyMetadataToSelected);
 	}
 	
 	menu.addAction("Refresh", [this]() { m_model->refresh(); });
@@ -705,34 +705,34 @@ void FunctionMetadataTableView::contextMenuEvent(QContextMenuEvent* event)
 	// Lumina operations
 	menu.addSeparator();
 	menu.addAction("Pull Selected (Lumina)", [this]() {
-		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
+		auto p = qobject_cast<GamayunWidget*>(parentWidget());
 		if (p) p->pullSelectedLumina();
 	});
 	menu.addAction("Pull All (Lumina)", [this]() {
-		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
+		auto p = qobject_cast<GamayunWidget*>(parentWidget());
 		if (p) p->pullAllLumina();
 	});
 	menu.addAction("Inspect Pulled Metadata", [this]() {
-		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
+		auto p = qobject_cast<GamayunWidget*>(parentWidget());
 		if (p) p->inspectPulledSelected();
 	});
 	menu.addAction("Log Pulled Metadata", [this]() {
-		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
+		auto p = qobject_cast<GamayunWidget*>(parentWidget());
 		if (p) p->logPulledSelected();
 	});
 	menu.addAction("Apply Pulled to Selected", [this]() {
-		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
+		auto p = qobject_cast<GamayunWidget*>(parentWidget());
 		if (p) p->applyPulledToSelected();
 	});
 	menu.addAction("Batch Diff & Apply (Lumina)", [this]() {
-		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
+		auto p = qobject_cast<GamayunWidget*>(parentWidget());
 		if (p) p->batchDiffAndApplySelected();
 	});
 	
 	menu.exec(event->globalPos());
 }
 
-void FunctionMetadataTableView::onRowDoubleClicked(const QModelIndex& index)
+void GamayunTableView::onRowDoubleClicked(const QModelIndex& index)
 {
 	if (!index.isValid() || !m_frame || !m_data)
 		return;
@@ -743,7 +743,7 @@ void FunctionMetadataTableView::onRowDoubleClicked(const QModelIndex& index)
 	m_frame->navigate(m_data, entry.address);
 }
 
-void FunctionMetadataTableView::onRowClicked(const QModelIndex& index)
+void GamayunTableView::onRowClicked(const QModelIndex& index)
 {
 	if (!index.isValid() || !m_data)
 		return;
@@ -790,7 +790,7 @@ void FunctionMetadataTableView::onRowClicked(const QModelIndex& index)
 	}
 }
 
-void FunctionMetadataTableView::applyMetadataToSelected()
+void GamayunTableView::applyMetadataToSelected()
 {
 	QModelIndex index = currentIndex();
 	if (!index.isValid())
@@ -804,31 +804,31 @@ void FunctionMetadataTableView::applyMetadataToSelected()
 		metadataInfo += QString("%1: %2\n").arg(it->first, it->second);
 	}
 	
-	QMessageBox::information(this, "Function Metadata",
+	QMessageBox::information(this, "Gamayun",
 		QString("Function: %1\nAddress: 0x%2\n\nMetadata:\n%3")
 			.arg(entry.name)
 			.arg(entry.address, 0, 16)
 			.arg(metadataInfo.isEmpty() ? "No metadata" : metadataInfo));
 }
 
-void FunctionMetadataTableView::navigateToFunction()
+void GamayunTableView::navigateToFunction()
 {
 	QModelIndex index = currentIndex();
 	if (index.isValid())
 		onRowDoubleClicked(index);
 }
 
-// FunctionMetadataSidebarWidget implementation
-FunctionMetadataSidebarWidget::FunctionMetadataSidebarWidget(ViewFrame* frame, BinaryViewRef data)
-	: SidebarWidget("Function Metadata"), m_data(data), m_frame(frame)
+// GamayunWidget implementation
+GamayunWidget::GamayunWidget(ViewFrame* frame, BinaryViewRef data)
+	: SidebarWidget("Gamayun"), m_data(data), m_frame(frame)
 {
 	QVBoxLayout* layout = new QVBoxLayout(this);
 	layout->setContentsMargins(4, 4, 4, 4);
 	layout->setSpacing(4);
 
 	// Create table
-	m_table = new FunctionMetadataTableView(this, frame, data);
-	m_model = static_cast<FunctionMetadataModel*>(m_table->model());
+	m_table = new GamayunTableView(this, frame, data);
+	m_model = static_cast<GamayunModel*>(m_table->model());
 	layout->addWidget(m_table, 1);
 
 	// Create compact button bar with just essential buttons
@@ -857,12 +857,12 @@ FunctionMetadataSidebarWidget::FunctionMetadataSidebarWidget(ViewFrame* frame, B
 	layout->addWidget(buttonBar);
 
 	// Connect buttons
-	connect(m_refreshButton, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::refreshMetadata);
-	connect(m_pullSelected, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::pullSelectedLumina);
-	connect(m_inspectPulled, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::inspectPulledSelected);
-	connect(m_applyPulled, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::applyPulledToSelected);
-	connect(m_pullAll, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::pullAllLumina);
-	connect(m_applyPulledAll, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::applyPulledToAll);
+	connect(m_refreshButton, &QPushButton::clicked, this, &GamayunWidget::refreshMetadata);
+	connect(m_pullSelected, &QPushButton::clicked, this, &GamayunWidget::pullSelectedLumina);
+	connect(m_inspectPulled, &QPushButton::clicked, this, &GamayunWidget::inspectPulledSelected);
+	connect(m_applyPulled, &QPushButton::clicked, this, &GamayunWidget::applyPulledToSelected);
+	connect(m_pullAll, &QPushButton::clicked, this, &GamayunWidget::pullAllLumina);
+	connect(m_applyPulledAll, &QPushButton::clicked, this, &GamayunWidget::applyPulledToAll);
 
 	setLayout(layout);
 
@@ -879,7 +879,7 @@ FunctionMetadataSidebarWidget::FunctionMetadataSidebarWidget(ViewFrame* frame, B
 			}
 		});
 
-		// Also check if initial analysis already completed (sidebar opened after analysis)
+		// Also check if initial analysis already completed (widget opened after analysis)
 		if (m_data->HasInitialAnalysis() && !m_hasComputedInitialCalcRel)
 		{
 			BinaryNinja::LogInfo("[Lumina] Initial analysis already complete, computing CalcRel...");
@@ -889,7 +889,7 @@ FunctionMetadataSidebarWidget::FunctionMetadataSidebarWidget(ViewFrame* frame, B
 	}
 }
 
-void FunctionMetadataSidebarWidget::notifyViewChanged(ViewFrame* frame)
+void GamayunWidget::notifyViewChanged(ViewFrame* frame)
 {
 	m_frame = frame;
 	if (frame)
@@ -915,7 +915,7 @@ void FunctionMetadataSidebarWidget::notifyViewChanged(ViewFrame* frame)
 	}
 }
 
-void FunctionMetadataSidebarWidget::notifyOffsetChanged(uint64_t offset)
+void GamayunWidget::notifyOffsetChanged(uint64_t offset)
 {
 	if (!m_data)
 		return;
@@ -949,12 +949,12 @@ void FunctionMetadataSidebarWidget::notifyOffsetChanged(uint64_t offset)
 	}
 }
 
-void FunctionMetadataSidebarWidget::notifyFontChanged()
+void GamayunWidget::notifyFontChanged()
 {
 	m_table->updateFont();
 }
 
-void FunctionMetadataSidebarWidget::computeCalcRelForAllFunctions()
+void GamayunWidget::computeCalcRelForAllFunctions()
 {
 	if (!m_data)
 	{
@@ -1013,19 +1013,19 @@ void FunctionMetadataSidebarWidget::computeCalcRelForAllFunctions()
 	BinaryNinja::LogInfo("[Lumina] ========================================");
 }
 
-void FunctionMetadataSidebarWidget::refreshMetadata()
+void GamayunWidget::refreshMetadata()
 {
 	if (m_model)
 		m_model->refresh();
 }
 
-void FunctionMetadataSidebarWidget::rejectAll()
+void GamayunWidget::rejectAll()
 {
 	m_model->selectNone();
 	QMessageBox::information(this, "Reject All", "All metadata entries deselected.");
 }
 
-void FunctionMetadataSidebarWidget::applySelected()
+void GamayunWidget::applySelected()
 {
 	auto selected = m_model->getSelectedEntries();
 	
@@ -1051,7 +1051,7 @@ void FunctionMetadataSidebarWidget::applySelected()
 	QMessageBox::information(this, "Apply Selected", message);
 }
 
-void FunctionMetadataSidebarWidget::applyAll()
+void GamayunWidget::applyAll()
 {
 	int total = m_model->rowCount();
 	
@@ -1059,7 +1059,7 @@ void FunctionMetadataSidebarWidget::applyAll()
 	QMessageBox::information(this, "Apply All", message);
 }
 
-void FunctionMetadataSidebarWidget::pullSelectedLumina()
+void GamayunWidget::pullSelectedLumina()
 {
 	if (!m_data) { QMessageBox::warning(this, "Lumina Pull", "No BinaryView"); return; }
 
@@ -1129,7 +1129,7 @@ void FunctionMetadataSidebarWidget::pullSelectedLumina()
 			.arg(skippedCount > 0 ? QString("\nSkipped %1 function(s) due to the reliability filter.").arg(skippedCount) : QString()));
 }
 
-void FunctionMetadataSidebarWidget::pullAllLumina()
+void GamayunWidget::pullAllLumina()
 {
 	if (!m_data) { QMessageBox::warning(this, "Lumina Pull All", "No BinaryView"); return; }
 
@@ -1229,7 +1229,7 @@ void FunctionMetadataSidebarWidget::pullAllLumina()
 			.arg(hashes.size()).arg(found));
 }
 
-void FunctionMetadataSidebarWidget::inspectPulledSelected()
+void GamayunWidget::inspectPulledSelected()
 {
 	if (!m_data) {
 		QMessageBox::warning(this, "Lumina Inspector", "No BinaryView");
@@ -1277,7 +1277,7 @@ void FunctionMetadataSidebarWidget::inspectPulledSelected()
 		QString::fromStdString(report.str()));
 }
 
-void FunctionMetadataSidebarWidget::logPulledSelected()
+void GamayunWidget::logPulledSelected()
 {
 	if (!m_data) {
 		QMessageBox::warning(this, "Lumina Log Dump", "No BinaryView");
@@ -1334,7 +1334,7 @@ void FunctionMetadataSidebarWidget::logPulledSelected()
 // Returns true if any metadata was applied
 static bool applyLuminaMetadata(
 	FunctionRef func,
-	const FunctionMetadataSidebarWidget::PullCacheEntry& cache,
+	const GamayunWidget::PullCacheEntry& cache,
 	LuminaApplyStats& stats)
 {
 	bool applied = false;
@@ -1632,7 +1632,7 @@ static bool applyLuminaMetadata(
 	return applied;
 }
 
-void FunctionMetadataSidebarWidget::applyPulledToSelected()
+void GamayunWidget::applyPulledToSelected()
 {
 	if (!m_data) return;
 	auto selected = m_model->getSelectedEntries();
@@ -1680,7 +1680,7 @@ void FunctionMetadataSidebarWidget::applyPulledToSelected()
 			.arg(missing));
 }
 
-void FunctionMetadataSidebarWidget::applyPulledToAll()
+void GamayunWidget::applyPulledToAll()
 {
 	if (!m_data) return;
 
@@ -1736,7 +1736,7 @@ void FunctionMetadataSidebarWidget::applyPulledToAll()
 			.arg(details.isEmpty() ? "" : QString(" (%1)").arg(details)));
 }
 
-void FunctionMetadataSidebarWidget::batchDiffAndApplySelected()
+void GamayunWidget::batchDiffAndApplySelected()
 {
 	if (!m_data) { QMessageBox::warning(this, "Lumina", "No BinaryView"); return; }
 	auto selected = m_model->getSelectedEntries();
@@ -1799,15 +1799,15 @@ void FunctionMetadataSidebarWidget::batchDiffAndApplySelected()
 		QString("Applied changes to %1 function(s). Missing cache: %2").arg(applied).arg(missing));
 }
 
-// FunctionMetadataSidebarWidgetType implementation
-FunctionMetadataSidebarWidgetType::FunctionMetadataSidebarWidgetType()
-	: SidebarWidgetType(QImage(), "Function Metadata")
+// GamayunWidgetType implementation
+GamayunWidgetType::GamayunWidgetType()
+	: SidebarWidgetType(QImage(), "Gamayun")
 {
 }
 
-SidebarWidget* FunctionMetadataSidebarWidgetType::createWidget(ViewFrame* frame, BinaryViewRef data)
+SidebarWidget* GamayunWidgetType::createWidget(ViewFrame* frame, BinaryViewRef data)
 {
-	return new FunctionMetadataSidebarWidget(frame, data);
+	return new GamayunWidget(frame, data);
 }
 
 // Lumina metadata extraction and logging
@@ -2065,7 +2065,7 @@ static std::string computeHashString(BinaryViewRef bvRef, FunctionRef func)
 	return std::string(hashStr);
 }
 
-// Auto-query Lumina server for function metadata
+// Auto-query Lumina server for Gamayun metadata
 static void autoQueryLumina(BinaryView* view)
 {
 	BinaryNinja::LogInfo("[Lumina] Auto-querying Lumina server for function metadata...");
@@ -2147,7 +2147,7 @@ static void autoQueryLumina(BinaryView* view)
 			const auto& pf = pulledFuncs[fi++];
 			FunctionRef func = funcRefs[i];
 
-			FunctionMetadataSidebarWidget::PullCacheEntry cache;
+			GamayunWidget::PullCacheEntry cache;
 			cache.have = true;
 			cache.metadata = parsePulledMetadata(pf.data, func->GetStart());
 			cache.popularity = pf.popularity;
@@ -2253,13 +2253,13 @@ extern "C"
 		// Register Lumina settings
 		lumina::registerSettings();
 
-		// Register the sidebar widget type
-		Sidebar::addSidebarWidgetType(new FunctionMetadataSidebarWidgetType());
+		// Register the widget type
+		Sidebar::addSidebarWidgetType(new GamayunWidgetType());
 
 		// Register global callback for when initial analysis completes on any binary
 		BinaryViewType::RegisterBinaryViewInitialAnalysisCompletionEvent(onInitialAnalysisComplete);
 
-		LogInfo("[Lumina] Function Metadata Sidebar plugin loaded");
+		LogInfo("[Lumina] Gamayun plugin loaded");
 		LogInfo("[Lumina] Server: %s:%d (TLS: %s, Verify: %s)",
 			lumina::getHost().c_str(),
 			lumina::getPort(),

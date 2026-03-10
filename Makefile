@@ -1,5 +1,5 @@
 # Binary Ninja Plugin Makefile
-# Dazhbog - Function Metadata Sidebar
+# Gamayun - Binary Ninja plugin client for Dazhbog
 
 BN_API_REPO := https://github.com/Vector35/binaryninja-api.git
 BN_API_DIR := binaryninja-api
@@ -23,7 +23,7 @@ NPROC := $(shell nproc)
 endif
 
 BUILD_DIR := build
-PLUGIN_NAME := libfunction_metadata_sidebar.$(PLUGIN_EXT)
+PLUGIN_NAME := libgamayun.$(PLUGIN_EXT)
 PLUGIN_PATH := $(BUILD_DIR)/out/bin/$(PLUGIN_NAME)
 
 CMAKE_FLAGS := -DBN_ALLOW_STUBS=ON -DBN_INSTALL_DIR="$(BN_INSTALL_DIR)" -DQT6_ROOT_PATH="$(QT6_ROOT_PATH)"

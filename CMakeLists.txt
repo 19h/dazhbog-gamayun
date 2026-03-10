@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.15 FATAL_ERROR)
 
-project(function_metadata_sidebar CXX C)
+project(gamayun CXX C)
 
 file(GLOB SOURCES
 	*.cpp
@@ -34,7 +34,7 @@ if(NOT CAPSTONE_INCLUDE_DIR OR NOT CAPSTONE_LIBRARY)
     message(FATAL_ERROR "Capstone library not found")
 endif()
 
-add_library(function_metadata_sidebar SHARED
+add_library(gamayun SHARED
     ${SOURCES}
     lumina_client.cpp
     lumina_client.h
@@ -61,7 +61,7 @@ if(NOT BN_API_BUILD_EXAMPLES AND NOT BN_INTERNAL_BUILD)
 endif()
 
 # Add include directories for Binary Ninja API headers
-target_include_directories(function_metadata_sidebar PRIVATE
+target_include_directories(gamayun PRIVATE
     ${BN_API_PATH}
     ${BN_API_PATH}/vendor/fmt/include
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -70,7 +70,7 @@ target_include_directories(function_metadata_sidebar PRIVATE
 # Link against binaryninjaui and Qt 6.8
 # Since we're compiling with Qt 6.8 headers and linking Qt 6.8 libs,
 # Binary Ninja's Qt 6.8 runtime will work correctly
-target_link_libraries(function_metadata_sidebar 
+target_link_libraries(gamayun 
     binaryninjaui
     ${CAPSTONE_LIBRARY}
     Qt6::Core 
@@ -81,7 +81,7 @@ target_link_libraries(function_metadata_sidebar
 # Disable Qt symbol versioning for maximum compatibility
 # Also disable consteval in fmt which has issues with some clang versions
 # FMT_HEADER_ONLY ensures fmt library is header-only
-target_compile_definitions(function_metadata_sidebar PRIVATE
+target_compile_definitions(gamayun PRIVATE
     QT_NO_VERSION_TAGGING
     FMT_USE_CONSTEVAL=0
     FMT_HEADER_ONLY=1)
@@ -89,14 +89,14 @@ target_compile_definitions(function_metadata_sidebar PRIVATE
 if(APPLE)
     set(BN_MACOS_RPATH "@executable_path")
     set(BN_QT_RPATH "@executable_path/../Frameworks")
-    set_target_properties(function_metadata_sidebar PROPERTIES
+    set_target_properties(gamayun PROPERTIES
         BUILD_WITH_INSTALL_RPATH ON
         BUILD_RPATH "${BN_MACOS_RPATH};${BN_QT_RPATH}"
         INSTALL_RPATH "${BN_MACOS_RPATH};${BN_QT_RPATH}"
         INSTALL_RPATH_USE_LINK_PATH FALSE)
 endif()
 
-set_target_properties(function_metadata_sidebar PROPERTIES
+set_target_properties(gamayun PROPERTIES
     CXX_STANDARD 20
 	CXX_VISIBILITY_PRESET hidden
 	CXX_STANDARD_REQUIRED ON
@@ -105,12 +105,12 @@ set_target_properties(function_metadata_sidebar PROPERTIES
 	LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/out/bin)
 
 if(UNIX AND NOT APPLE)
-    target_link_options(function_metadata_sidebar PRIVATE
+    target_link_options(gamayun PRIVATE
         "$<$<CXX_COMPILER_ID:GNU,Clang>:-Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/qt_compat.ld>")
 endif()
 
 if(BN_INTERNAL_BUILD)
-	ui_plugin_rpath(function_metadata_sidebar)
+	ui_plugin_rpath(gamayun)
 endif()
 
 bn_install_plugin(${PROJECT_NAME})

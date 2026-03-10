@@ -21,7 +21,7 @@
 using namespace BinaryNinja;
 
 // Structure to hold function metadata info
-struct FunctionMetadataEntry
+struct GamayunEntry
 {
 	uint64_t address;
 	QString name;
@@ -30,15 +30,15 @@ struct FunctionMetadataEntry
 };
 
 // Table model for displaying function metadata
-class FunctionMetadataModel : public QAbstractTableModel
+class GamayunModel : public QAbstractTableModel
 {
 	Q_OBJECT
 
 	BinaryViewRef m_data;
-	std::vector<FunctionMetadataEntry> m_entries;
+	std::vector<GamayunEntry> m_entries;
 
 public:
-	FunctionMetadataModel(QWidget* parent, BinaryViewRef data);
+	GamayunModel(QWidget* parent, BinaryViewRef data);
 
 	void refresh();
 	
@@ -49,26 +49,26 @@ public:
 	virtual Qt::ItemFlags flags(const QModelIndex& index) const override;
 	virtual bool setData(const QModelIndex& index, const QVariant& value, int role = Qt::EditRole) override;
 
-	FunctionMetadataEntry& entryAt(int row) { return m_entries[row]; }
-	const FunctionMetadataEntry& entryAt(int row) const { return m_entries[row]; }
+	GamayunEntry& entryAt(int row) { return m_entries[row]; }
+	const GamayunEntry& entryAt(int row) const { return m_entries[row]; }
 	
 	void selectAll();
 	void selectNone();
-	std::vector<FunctionMetadataEntry*> getSelectedEntries();
+	std::vector<GamayunEntry*> getSelectedEntries();
 };
 
 // Table view for function metadata
-class FunctionMetadataTableView : public QTableView
+class GamayunTableView : public QTableView
 {
 	Q_OBJECT
 
 	BinaryViewRef m_data;
 	ViewFrame* m_frame;
-	FunctionMetadataModel* m_model;
+	GamayunModel* m_model;
 	UIActionHandler m_actionHandler;
 
 public:
-	FunctionMetadataTableView(QWidget* parent, ViewFrame* frame, BinaryViewRef data);
+	GamayunTableView(QWidget* parent, ViewFrame* frame, BinaryViewRef data);
 
 	void updateFont();
 
@@ -82,15 +82,15 @@ private Q_SLOTS:
 	void navigateToFunction();
 };
 
-// Main sidebar widget
-class FunctionMetadataSidebarWidget : public SidebarWidget
+// Main widget
+class GamayunWidget : public SidebarWidget
 {
 	Q_OBJECT
 
 	BinaryViewRef m_data;
 	ViewFrame* m_frame;
-	FunctionMetadataTableView* m_table;
-	FunctionMetadataModel* m_model;
+	GamayunTableView* m_table;
+	GamayunModel* m_model;
 	
 	QPushButton* m_refreshButton;
 	QPushButton* m_rejectAllButton;
@@ -120,7 +120,7 @@ private:
 	bool m_hasComputedInitialCalcRel = false;
 
 public:
-	FunctionMetadataSidebarWidget(ViewFrame* frame, BinaryViewRef data);
+	GamayunWidget(ViewFrame* frame, BinaryViewRef data);
 
 	virtual void notifyViewChanged(ViewFrame* frame) override;
 	virtual void notifyOffsetChanged(uint64_t offset) override;
@@ -143,11 +143,11 @@ private:
 	void computeCalcRelForAllFunctions();
 };
 
-// Sidebar widget type for registration
-class FunctionMetadataSidebarWidgetType : public SidebarWidgetType
+// Widget type for registration
+class GamayunWidgetType : public SidebarWidgetType
 {
 public:
-	FunctionMetadataSidebarWidgetType();
+	GamayunWidgetType();
 	
 	virtual SidebarWidget* createWidget(ViewFrame* frame, BinaryViewRef data) override;
 	virtual SidebarContextSensitivity contextSensitivity() const override
