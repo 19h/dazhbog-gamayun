@@ -1673,98 +1673,124 @@ PatternResult computePattern(
 }
 
 // ============================================================================
-// Push Filtering Heuristic
+// Pull Filtering Heuristic
 // ============================================================================
 
-PushFilterResult shouldSkipPush(BinaryViewRef bv, FunctionRef func)
+static uint64_t getFunctionExtentEnd(FunctionRef func)
 {
-    PushFilterResult result;
+    if (!func) {
+        return 0;
+    }
+
+    uint64_t funcEnd = func->GetStart();
+    for (const auto& range : func->GetAddressRanges()) {
+        funcEnd = std::max(funcEnd, range.end);
+    }
+    for (auto& block : func->GetBasicBlocks()) {
+        funcEnd = std::max(funcEnd, block->GetEnd());
+    }
+    return funcEnd;
+}
+
+static PullFilterResult detectLikelyArm64SplitTailMismatch(BinaryViewRef bv, FunctionRef func)
+{
+    PullFilterResult result;
     result.shouldSkip = false;
-    result.funcSize = 0;
-    result.movabsCount = 0;
 
     if (!bv || !func) {
-        result.shouldSkip = true;
-        result.reason = "Invalid binary view or function";
         return result;
     }
 
-    // Calculate function size from basic blocks
-    uint64_t funcStart = func->GetStart();
-    uint64_t funcEnd = funcStart;
-    auto blocks = func->GetBasicBlocks();
-    for (auto& block : blocks) {
-        if (block->GetEnd() > funcEnd) {
-            funcEnd = block->GetEnd();
-        }
-    }
-    result.funcSize = static_cast<size_t>(funcEnd - funcStart);
-
-    // Count movabs instructions by scanning the function bytes
-    // movabs uses REX.W prefix with opcodes:
-    // - A0-A3: MOV AL/AX/EAX/RAX, moffs (rare)
-    // - B8-BF with REX.W: MOV r64, imm64
     auto arch = bv->GetDefaultArchitecture();
     if (!arch) {
-        result.shouldSkip = true;
-        result.reason = "No architecture available";
         return result;
     }
 
-    std::string archName = arch->GetName();
-    bool isX64 = (archName == "x86_64");
-
-    if (isX64) {
-        uint64_t addr = funcStart;
-        while (addr < funcEnd) {
-            size_t maxLen = static_cast<size_t>(funcEnd - addr);
-            if (maxLen > 16) maxLen = 16;
-
-            BinaryNinja::DataBuffer buf = bv->ReadBuffer(addr, maxLen);
-            if (buf.GetLength() == 0) {
-                addr++;
-                continue;
-            }
-
-            const uint8_t* data = reinterpret_cast<const uint8_t*>(buf.GetData());
-            size_t bufLen = buf.GetLength();
-
-            BinaryNinja::InstructionInfo info;
-            size_t insnLen = 1;
-            if (arch->GetInstructionInfo(data, addr, bufLen, info)) {
-                insnLen = info.length;
-                if (insnLen == 0) insnLen = 1;
-            }
-            if (insnLen > bufLen) insnLen = bufLen;
-
-            // Check for movabs: REX.W (0x48-0x4F) + B8-BF = MOV r64, imm64
-            // This is a 10-byte instruction: 2-byte prefix + 8-byte immediate
-            if (insnLen >= 10 && bufLen >= 10) {
-                uint8_t b0 = data[0];
-                uint8_t b1 = data[1];
-                // REX.W prefix: 0x48-0x4F (bit 3 set = W bit)
-                // Opcode B8-BF: MOV r64, imm64
-                if ((b0 & 0xF8) == 0x48 && (b1 & 0xF8) == 0xB8) {
-                    result.movabsCount++;
-                }
-            }
-
-            addr += insnLen;
-        }
+    const std::string archName = arch->GetName();
+    if (archName != "aarch64" && archName != "arm64" && archName != "aarch64be") {
+        return result;
     }
 
-    // Apply heuristic: (size > 4500) OR (movabs > 4)
-    const size_t SIZE_THRESHOLD = 4500;
-    const int MOVABS_THRESHOLD = 4;
+    const uint64_t funcStart = func->GetStart();
+    const uint64_t funcEnd = getFunctionExtentEnd(func);
+    if (funcEnd <= funcStart) {
+        return result;
+    }
 
-    if (result.funcSize > SIZE_THRESHOLD) {
+    constexpr uint64_t kNearbyTailWindow = 0x300;
+
+    uint64_t addr = funcStart;
+    while (addr < funcEnd) {
+        size_t maxLen = static_cast<size_t>(funcEnd - addr);
+        if (maxLen > 16) {
+            maxLen = 16;
+        }
+
+        BinaryNinja::DataBuffer buf = bv->ReadBuffer(addr, maxLen);
+        if (buf.GetLength() == 0) {
+            ++addr;
+            continue;
+        }
+
+        const uint8_t* data = reinterpret_cast<const uint8_t*>(buf.GetData());
+        size_t bufLen = buf.GetLength();
+
+        BinaryNinja::InstructionInfo info;
+        size_t insnLen = 1;
+        if (arch->GetInstructionInfo(data, addr, bufLen, info)) {
+            insnLen = info.length;
+            if (insnLen == 0) {
+                insnLen = 1;
+            }
+        }
+        if (insnLen > bufLen) {
+            insnLen = bufLen;
+        }
+
+        if (insnLen == 4 && bufLen >= 4) {
+            uint32_t insn = 0;
+            insn |= static_cast<uint32_t>(data[0]);
+            insn |= static_cast<uint32_t>(data[1]) << 8;
+            insn |= static_cast<uint32_t>(data[2]) << 16;
+            insn |= static_cast<uint32_t>(data[3]) << 24;
+
+            bool hasTarget = false;
+            uint64_t target = 0;
+
+            if (arm64::isBranch(insn) && !arm64::isBL(insn)) {
+                target = static_cast<uint64_t>(static_cast<int64_t>(addr) + arm64::branchOffset26(insn));
+                hasTarget = true;
+            } else if (arm64::isBranchCond(insn) || arm64::isCBZ(insn)) {
+                target = static_cast<uint64_t>(static_cast<int64_t>(addr) + arm64::branchOffset19(insn));
+                hasTarget = true;
+            } else if (arm64::isTBZ(insn)) {
+                target = static_cast<uint64_t>(static_cast<int64_t>(addr) + arm64::branchOffset14(insn));
+                hasTarget = true;
+            }
+
+            if (hasTarget && target >= funcEnd && target <= (funcEnd + kNearbyTailWindow)) {
+                auto seg = bv->GetSegmentAt(target);
+                if (seg && ((seg->GetFlags() & 0x1) != 0)) {
+                    ++result.suspiciousBranchCount;
+                    if (result.firstSuspiciousSource == 0) {
+                        result.firstSuspiciousSource = addr;
+                        result.firstSuspiciousTarget = target;
+                    }
+                }
+            }
+        }
+
+        addr += insnLen;
+    }
+
+    if (result.suspiciousBranchCount > 0) {
         result.shouldSkip = true;
-        result.reason = "Function too large (" + std::to_string(result.funcSize) +
-                       " > " + std::to_string(SIZE_THRESHOLD) + " bytes)";
-    } else if (result.movabsCount > MOVABS_THRESHOLD) {
-        result.shouldSkip = true;
-        result.reason = "Too many movabs instructions (" + std::to_string(result.movabsCount) +
-                       " > " + std::to_string(MOVABS_THRESHOLD) + ")";
+        result.reason = "Likely ARM64 split-tail layout mismatch ("
+            + std::to_string(result.suspiciousBranchCount)
+            + " nearby executable non-call branch"
+            + (result.suspiciousBranchCount == 1 ? std::string() : std::string("es"))
+            + ", first " + debug::hexAddr(result.firstSuspiciousSource)
+            + " -> " + debug::hexAddr(result.firstSuspiciousTarget) + ")";
     }
 
     return result;
@@ -1819,6 +1845,11 @@ PullFilterResult shouldSkipPull(BinaryViewRef bv, FunctionRef func)
             result.reason = "PLT stub in section: " + secName;
             return result;
         }
+    }
+
+    PullFilterResult mismatchRisk = detectLikelyArm64SplitTailMismatch(bv, func);
+    if (mismatchRisk.shouldSkip) {
+        return mismatchRisk;
     }
 
     return result;

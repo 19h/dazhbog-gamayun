@@ -19,8 +19,6 @@ enum class PacketType : uint8_t {
     Hello = 0x0d,
     PullMetadata = 0x0e,
     PullMetadataResult = 0x0f,
-    PushMetadata = 0x10,
-    PushMetadataResult = 0x11,
     HelloResult = 0x31,
 };
 
@@ -34,7 +32,6 @@ enum class OperationResult : int32_t {
     NotFound = -2,
     Error = -1,
     Ok = 0,
-    Added = 1,
 };
 
 enum class MetadataKey : uint32_t {
@@ -51,11 +48,6 @@ enum class MetadataKey : uint32_t {
     OperandRepresentations = 10,
     OperandRepresentationsEx = 11,
 };
-
-constexpr uint32_t kPushOverrideIfBetterOrDifferent = 0x0;
-constexpr uint32_t kPushOverride = 0x1;
-constexpr uint32_t kPushDoNotOverride = 0x2;
-constexpr uint32_t kPushMerge = 0x3;
 
 bool pack_dd_into(std::vector<uint8_t>& out, uint32_t value);
 std::vector<uint8_t> pack_dd(uint32_t value);
@@ -96,25 +88,9 @@ struct FunctionInfo {
     bool deserialize(const uint8_t*& ptr, const uint8_t* end);
 };
 
-struct FunctionInfoAndPattern {
-    FunctionInfo info;
-    PatternId patternId;
-
-    void serialize(std::vector<uint8_t>& out) const;
-    bool deserialize(const uint8_t*& ptr, const uint8_t* end);
-};
-
 struct FunctionInfoAndFrequency {
     FunctionInfo info;
     uint32_t frequency = 0;
-
-    void serialize(std::vector<uint8_t>& out) const;
-    bool deserialize(const uint8_t*& ptr, const uint8_t* end);
-};
-
-struct InputFile {
-    std::string path;
-    std::array<uint8_t, kMd5HashSize> md5{};
 
     void serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const uint8_t*& ptr, const uint8_t* end);
@@ -179,25 +155,6 @@ struct PullMetadataRequest {
 struct PullMetadataResult {
     std::vector<OperationResult> codes;
     std::vector<FunctionInfoAndFrequency> results;
-
-    void serialize(std::vector<uint8_t>& out) const;
-    bool deserialize(const uint8_t*& ptr, const uint8_t* end);
-};
-
-struct PushMetadataRequest {
-    uint32_t flags = 0;
-    std::string idb;
-    InputFile input;
-    std::string hostname;
-    std::vector<FunctionInfoAndPattern> contents;
-    std::vector<uint64_t> ea64s;
-
-    void serialize(std::vector<uint8_t>& out) const;
-    bool deserialize(const uint8_t*& ptr, const uint8_t* end);
-};
-
-struct PushMetadataResult {
-    std::vector<OperationResult> codes;
 
     void serialize(std::vector<uint8_t>& out) const;
     bool deserialize(const uint8_t*& ptr, const uint8_t* end);

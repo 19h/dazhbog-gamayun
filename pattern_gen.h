@@ -310,47 +310,25 @@ PatternResult computePattern(
 );
 
 /**
- * Push filtering heuristic result
- */
-struct PushFilterResult {
-    bool shouldSkip;        // True if function should NOT be pushed
-    size_t funcSize;        // Function size in bytes
-    int movabsCount;        // Number of movabs instructions
-    std::string reason;     // Reason for skipping (if shouldSkip=true)
-};
-
-/**
- * Determine if a function should be excluded from Lumina push operations.
- *
- * Uses heuristics to detect functions that are likely to have incorrect
- * CalcRel hashes compared to IDA, preventing database pollution.
- *
- * Heuristic: (size > 4500) OR (movabs > 4)
- *
- * This catches known-problematic functions:
- * - Large functions (>4500 bytes) with complex control flow
- * - Functions using many movabs instructions (>4)
- *
- * @param bv Binary view
- * @param func Function to check
- * @return PushFilterResult with skip decision and stats
- */
-PushFilterResult shouldSkipPush(BinaryViewRef bv, FunctionRef func);
-
-/**
  * Pull filtering heuristic result
  */
 struct PullFilterResult {
     bool shouldSkip;        // True if function should NOT be queried
     std::string reason;     // Reason for skipping (if shouldSkip=true)
+    size_t suspiciousBranchCount = 0;
+    uint64_t firstSuspiciousSource = 0;
+    uint64_t firstSuspiciousTarget = 0;
 };
 
 /**
  * Determine if a function should be excluded from Lumina pull operations.
  *
- * Filters out functions that IDA doesn't push to Lumina:
+ * Filters out functions that IDA doesn't query as ordinary Lumina targets:
  * - PLT stubs (in .plt or .plt.got sections)
  * - CRT functions (_init, _fini, frame_dummy, etc.)
+ * - ARM64 functions with suspicious non-call branches into nearby executable
+ *   code beyond the Binary Ninja function end, which are likely split-tail
+ *   layout mismatches and therefore hash unreliability risks
  *
  * @param bv Binary view
  * @param func Function to check

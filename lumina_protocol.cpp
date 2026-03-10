@@ -33,15 +33,6 @@ bool unpack_dq_ptr(uint64_t& value, const uint8_t*& ptr, const uint8_t* end)
     return true;
 }
 
-bool unpack_ea64_ptr(uint64_t& value, const uint8_t*& ptr, const uint8_t* end)
-{
-    size_t consumed = 0;
-    if (!unpack_ea64(ptr, static_cast<size_t>(end - ptr), value, consumed) || consumed == 0)
-        return false;
-    ptr += consumed;
-    return true;
-}
-
 bool unpack_cstr_ptr(std::string& value, const uint8_t*& ptr, const uint8_t* end)
 {
     size_t consumed = 0;
@@ -388,17 +379,6 @@ bool FunctionInfo::deserialize(const uint8_t*& ptr, const uint8_t* end)
     return true;
 }
 
-void FunctionInfoAndPattern::serialize(std::vector<uint8_t>& out) const
-{
-    info.serialize(out);
-    patternId.serialize(out);
-}
-
-bool FunctionInfoAndPattern::deserialize(const uint8_t*& ptr, const uint8_t* end)
-{
-    return info.deserialize(ptr, end) && patternId.deserialize(ptr, end);
-}
-
 void FunctionInfoAndFrequency::serialize(std::vector<uint8_t>& out) const
 {
     info.serialize(out);
@@ -408,19 +388,6 @@ void FunctionInfoAndFrequency::serialize(std::vector<uint8_t>& out) const
 bool FunctionInfoAndFrequency::deserialize(const uint8_t*& ptr, const uint8_t* end)
 {
     return info.deserialize(ptr, end) && unpack_dd_ptr(frequency, ptr, end);
-}
-
-void InputFile::serialize(std::vector<uint8_t>& out) const
-{
-    pack_cstr(out, path);
-    out.insert(out.end(), md5.begin(), md5.end());
-}
-
-bool InputFile::deserialize(const uint8_t*& ptr, const uint8_t* end)
-{
-    if (!unpack_cstr_ptr(path, ptr, end))
-        return false;
-    return read_exact(ptr, end, md5.data(), md5.size());
 }
 
 void UserLicenseInfo::serialize(std::vector<uint8_t>& out) const
@@ -603,69 +570,6 @@ bool PullMetadataResult::deserialize(const uint8_t*& ptr, const uint8_t* end)
             return false;
     }
     return true;
-}
-
-void PushMetadataRequest::serialize(std::vector<uint8_t>& out) const
-{
-    pack_dd_into(out, flags);
-    pack_cstr(out, idb);
-    input.serialize(out);
-    pack_cstr(out, hostname);
-
-    pack_dd_into(out, static_cast<uint32_t>(contents.size()));
-    for (const auto& content : contents)
-        content.serialize(out);
-
-    pack_dd_into(out, static_cast<uint32_t>(ea64s.size()));
-    for (uint64_t ea64 : ea64s)
-        pack_ea64_into(out, ea64);
-}
-
-bool PushMetadataRequest::deserialize(const uint8_t*& ptr, const uint8_t* end)
-{
-    if (!unpack_dd_ptr(flags, ptr, end))
-        return false;
-    if (!unpack_cstr_ptr(idb, ptr, end))
-        return false;
-    if (!input.deserialize(ptr, end))
-        return false;
-    if (!unpack_cstr_ptr(hostname, ptr, end))
-        return false;
-
-    uint32_t contentCount = 0;
-    if (!unpack_dd_ptr(contentCount, ptr, end))
-        return false;
-    contents.clear();
-    contents.resize(contentCount);
-    for (uint32_t i = 0; i < contentCount; ++i)
-    {
-        if (!contents[i].deserialize(ptr, end))
-            return false;
-    }
-
-    uint32_t eaCount = 0;
-    if (!unpack_dd_ptr(eaCount, ptr, end))
-        return false;
-    ea64s.clear();
-    ea64s.reserve(eaCount);
-    for (uint32_t i = 0; i < eaCount; ++i)
-    {
-        uint64_t ea64 = 0;
-        if (!unpack_ea64_ptr(ea64, ptr, end))
-            return false;
-        ea64s.push_back(ea64);
-    }
-    return true;
-}
-
-void PushMetadataResult::serialize(std::vector<uint8_t>& out) const
-{
-    serialize_operation_results(out, codes);
-}
-
-bool PushMetadataResult::deserialize(const uint8_t*& ptr, const uint8_t* end)
-{
-    return deserialize_operation_results(codes, ptr, end);
 }
 
 }  // namespace lumina

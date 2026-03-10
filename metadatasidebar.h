@@ -98,6 +98,7 @@ class FunctionMetadataSidebarWidget : public SidebarWidget
 	QPushButton* m_applyAllButton;
 	QPushButton* m_pullSelected;
 	QPushButton* m_pullAll;
+	QPushButton* m_inspectPulled;
 	QPushButton* m_applyPulled;
 	QPushButton* m_applyPulledAll;
 
@@ -132,6 +133,8 @@ public Q_SLOTS:
 	void applyAll();
 	void pullSelectedLumina();
 	void pullAllLumina();
+	void inspectPulledSelected();
+	void logPulledSelected();
 	void applyPulledToSelected();
 	void applyPulledToAll();
 	void batchDiffAndApplySelected();

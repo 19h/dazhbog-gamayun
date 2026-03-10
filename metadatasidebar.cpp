@@ -6,8 +6,11 @@
 #include "debug_dump.h"
 // Forward declaration for View class
 class View;
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <QMessageBox>
 #include <QHeaderView>
+#include <QPlainTextEdit>
 #include <QProcessEnvironment>
 #include <memory>
 #include <sstream>
@@ -72,6 +75,42 @@ static std::string effectiveFunctionComment(const lumina::FunctionMetadata& meta
 {
 	auto comment = metadata.effectiveFunctionComment();
 	return comment ? *comment : std::string();
+}
+
+static std::string formatPulledMetadataReport(
+	uint64_t address,
+	const FunctionMetadataSidebarWidget::PullCacheEntry& cache)
+{
+	std::ostringstream out;
+	out << "Address: 0x" << std::hex << std::uppercase << address << std::dec << "\n";
+	out << "Remote Name: " << (cache.remoteName.empty() ? "<unnamed>" : cache.remoteName) << "\n";
+	out << "Popularity: " << cache.popularity << "\n";
+	out << "Remote Length: " << cache.len << "\n";
+	out << "Raw Metadata Size: " << cache.raw.size() << " bytes\n\n";
+	out << lumina::formatFunctionMetadata(cache.metadata, true);
+	return out.str();
+}
+
+static void showMetadataInspector(QWidget* parent, const QString& title, const QString& text)
+{
+	QDialog dialog(parent);
+	dialog.setWindowTitle(title);
+	dialog.resize(1100, 760);
+
+	auto* layout = new QVBoxLayout(&dialog);
+	auto* editor = new QPlainTextEdit(&dialog);
+	editor->setReadOnly(true);
+	editor->setPlainText(text);
+	editor->setLineWrapMode(QPlainTextEdit::NoWrap);
+	editor->setFont(getMonospaceFont(editor));
+	layout->addWidget(editor, 1);
+
+	auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+	QObject::connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+	QObject::connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+	layout->addWidget(buttons);
+
+	dialog.exec();
 }
 
 // FunctionMetadataModel implementation
@@ -310,6 +349,14 @@ void FunctionMetadataTableView::contextMenuEvent(QContextMenuEvent* event)
 		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
 		if (p) p->pullAllLumina();
 	});
+	menu.addAction("Inspect Pulled Metadata", [this]() {
+		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
+		if (p) p->inspectPulledSelected();
+	});
+	menu.addAction("Log Pulled Metadata", [this]() {
+		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
+		if (p) p->logPulledSelected();
+	});
 	menu.addAction("Apply Pulled to Selected", [this]() {
 		auto p = qobject_cast<FunctionMetadataSidebarWidget*>(parentWidget());
 		if (p) p->applyPulledToSelected();
@@ -429,6 +476,7 @@ FunctionMetadataSidebarWidget::FunctionMetadataSidebarWidget(ViewFrame* frame, B
 
 	m_refreshButton = new QPushButton("Refresh", buttonBar);
 	m_pullSelected = new QPushButton("Pull", buttonBar);
+	m_inspectPulled = new QPushButton("Inspect", buttonBar);
 	m_applyPulled = new QPushButton("Apply", buttonBar);
 	m_pullAll = new QPushButton("Pull All", buttonBar);
 	m_applyPulledAll = new QPushButton("Apply All", buttonBar);
@@ -436,17 +484,19 @@ FunctionMetadataSidebarWidget::FunctionMetadataSidebarWidget(ViewFrame* frame, B
 	// Row 0: Main actions for selected
 	buttonLayout->addWidget(m_refreshButton, 0, 0);
 	buttonLayout->addWidget(m_pullSelected, 0, 1);
-	buttonLayout->addWidget(m_applyPulled, 0, 2);
+	buttonLayout->addWidget(m_inspectPulled, 0, 2);
+	buttonLayout->addWidget(m_applyPulled, 0, 3);
 
 	// Row 1: Bulk actions for all functions
 	buttonLayout->addWidget(m_pullAll, 1, 1);
-	buttonLayout->addWidget(m_applyPulledAll, 1, 2);
+	buttonLayout->addWidget(m_applyPulledAll, 1, 3);
 
 	layout->addWidget(buttonBar);
 
 	// Connect buttons
 	connect(m_refreshButton, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::refreshMetadata);
 	connect(m_pullSelected, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::pullSelectedLumina);
+	connect(m_inspectPulled, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::inspectPulledSelected);
 	connect(m_applyPulled, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::applyPulledToSelected);
 	connect(m_pullAll, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::pullAllLumina);
 	connect(m_applyPulledAll, &QPushButton::clicked, this, &FunctionMetadataSidebarWidget::applyPulledToAll);
@@ -660,11 +710,20 @@ void FunctionMetadataSidebarWidget::pullSelectedLumina()
 	// Build hash list in the same order as 'selected'
 	std::vector<std::array<uint8_t,16>> hashes;
 	std::vector<uint64_t> addrs;
+	size_t skippedCount = 0;
 	hashes.reserve(selected.size());
 	addrs.reserve(selected.size());
 	for (auto* e : selected) {
 		auto it = fbyAddr.find(e->address);
 		if (it == fbyAddr.end()) continue;
+		auto pullFilter = lumina::shouldSkipPull(m_data, it->second);
+		if (pullFilter.shouldSkip) {
+			skippedCount++;
+			BinaryNinja::LogDebug("[Lumina] Pull filter: skipping %s - %s",
+				it->second->GetSymbol() ? it->second->GetSymbol()->GetShortName().c_str() : "<unnamed>",
+				pullFilter.reason.c_str());
+			continue;
+		}
 		hashes.push_back(compute_key(m_data, it->second));
 		addrs.push_back(e->address);
 	}
@@ -701,8 +760,10 @@ void FunctionMetadataSidebarWidget::pullSelectedLumina()
 	}
 
 	QMessageBox::information(this, "Lumina Pull",
-		QString("Requested %1 function(s).\nFound %2; updated cache for selected rows.")
-			.arg(hashes.size()).arg(found));
+		QString("Requested %1 function(s).\nFound %2; updated cache for selected rows.%3")
+			.arg(hashes.size())
+			.arg(found)
+			.arg(skippedCount > 0 ? QString("\nSkipped %1 function(s) due to the reliability filter.").arg(skippedCount) : QString()));
 }
 
 void FunctionMetadataSidebarWidget::pullAllLumina()
@@ -728,7 +789,7 @@ void FunctionMetadataSidebarWidget::pullAllLumina()
 
 	size_t skippedCount = 0;
 	for (auto& func : functions) {
-		// Apply pull filter to skip PLT stubs and CRT functions
+		// Apply pull filter to skip functions unlikely to produce reliable hashes
 		auto pullFilter = lumina::shouldSkipPull(m_data, func);
 		if (pullFilter.shouldSkip) {
 			skippedCount++;
@@ -753,7 +814,7 @@ void FunctionMetadataSidebarWidget::pullAllLumina()
 	}
 
 	if (skippedCount > 0) {
-		BinaryNinja::LogInfo("[Lumina] Pull filter: skipped %zu PLT/CRT functions", skippedCount);
+		BinaryNinja::LogInfo("[Lumina] Pull filter: skipped %zu function(s)", skippedCount);
 	}
 
 	if (hashes.empty()) { QMessageBox::information(this, "Lumina Pull All", "No valid function hashes."); return; }
@@ -803,6 +864,107 @@ void FunctionMetadataSidebarWidget::pullAllLumina()
 	QMessageBox::information(this, "Lumina Pull All",
 		QString("Queried %1 functions.\nFound metadata for %2.\nUse 'Apply' to apply changes.")
 			.arg(hashes.size()).arg(found));
+}
+
+void FunctionMetadataSidebarWidget::inspectPulledSelected()
+{
+	if (!m_data) {
+		QMessageBox::warning(this, "Lumina Inspector", "No BinaryView");
+		return;
+	}
+
+	auto selected = m_model->getSelectedEntries();
+	if (selected.empty()) {
+		QMessageBox::information(this, "Lumina Inspector", "No entries selected.");
+		return;
+	}
+
+	std::ostringstream report;
+	size_t shown = 0;
+	size_t missing = 0;
+	for (auto* entry : selected)
+	{
+		auto it = m_pullCache.find(entry->address);
+		if (it == m_pullCache.end() || !it->second.have) {
+			missing++;
+			continue;
+		}
+
+		if (shown != 0)
+			report << "\n============================================================\n\n";
+		report << formatPulledMetadataReport(entry->address, it->second);
+		shown++;
+	}
+
+	if (shown == 0) {
+		QMessageBox::information(
+			this,
+			"Lumina Inspector",
+			QString("No pulled metadata in cache for the current selection (missing=%1).")
+				.arg(missing));
+		return;
+	}
+
+	if (missing > 0)
+		report << "\n\nMissing cached entries: " << missing << "\n";
+
+	showMetadataInspector(
+		this,
+		QString("Lumina Metadata Inspector (%1)").arg(shown),
+		QString::fromStdString(report.str()));
+}
+
+void FunctionMetadataSidebarWidget::logPulledSelected()
+{
+	if (!m_data) {
+		QMessageBox::warning(this, "Lumina Log Dump", "No BinaryView");
+		return;
+	}
+
+	auto selected = m_model->getSelectedEntries();
+	if (selected.empty()) {
+		QMessageBox::information(this, "Lumina Log Dump", "No entries selected.");
+		return;
+	}
+
+	std::ostringstream report;
+	size_t shown = 0;
+	size_t missing = 0;
+	for (auto* entry : selected)
+	{
+		auto it = m_pullCache.find(entry->address);
+		if (it == m_pullCache.end() || !it->second.have) {
+			missing++;
+			continue;
+		}
+
+		if (shown != 0)
+			report << "\n============================================================\n\n";
+		report << formatPulledMetadataReport(entry->address, it->second);
+		shown++;
+	}
+
+	if (shown == 0) {
+		QMessageBox::information(
+			this,
+			"Lumina Log Dump",
+			QString("No pulled metadata in cache for the current selection (missing=%1).")
+				.arg(missing));
+		return;
+	}
+
+	if (missing > 0)
+		report << "\n\nMissing cached entries: " << missing << "\n";
+
+	BinaryNinja::LogInfo("[Lumina] ===== Metadata Dump Start =====");
+	BinaryNinja::LogInfo("%s", report.str().c_str());
+	BinaryNinja::LogInfo("[Lumina] ===== Metadata Dump End =====");
+	QMessageBox::information(
+		this,
+		"Lumina Log Dump",
+		QString("Logged metadata for %1 function(s)%2.")
+			.arg(shown)
+			.arg(missing == 0 ? QString() : QString(" (%1 missing cache entries)").arg(missing)));
 }
 
 // Helper to apply Lumina metadata to a single function
@@ -1285,9 +1447,20 @@ static void autoQueryLumina(BinaryView* view)
 	std::vector<std::array<uint8_t, 16>> hashes;
 	std::vector<uint64_t> addrs;
 	std::vector<FunctionRef> funcRefs;
+	size_t skippedCount = 0;
 
 	for (auto& func : functions)
 	{
+		auto pullFilter = lumina::shouldSkipPull(bvRef, func);
+		if (pullFilter.shouldSkip)
+		{
+			skippedCount++;
+			BinaryNinja::LogDebug("[Lumina] Auto-query filter: skipping %s - %s",
+				func->GetSymbol() ? func->GetSymbol()->GetShortName().c_str() : "<unnamed>",
+				pullFilter.reason.c_str());
+			continue;
+		}
+
 		lumina::PatternResult pattern = lumina::computePattern(bvRef, func);
 		if (pattern.success)
 		{
@@ -1301,6 +1474,11 @@ static void autoQueryLumina(BinaryView* view)
 	{
 		BinaryNinja::LogInfo("[Lumina] No valid function hashes to query");
 		return;
+	}
+
+	if (skippedCount > 0)
+	{
+		BinaryNinja::LogInfo("[Lumina] Auto-query filter: skipped %zu function(s)", skippedCount);
 	}
 
 	BinaryNinja::LogInfo("[Lumina] Querying %zu functions from server %s:%d (TLS: %s)",
