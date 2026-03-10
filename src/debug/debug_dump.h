@@ -1,6 +1,6 @@
 #pragma once
 /**
- * debug_dump.h - Comprehensive debug logging for Lumina CalcRel hash computation
+ * debug_dump.h - Comprehensive debug logging for Lumina function-hash computation
  *
  * Dumps every step to disk for comparison with IDA's implementation.
  */

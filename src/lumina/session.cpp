@@ -25,5 +25,6 @@ std::unique_ptr<lumina::Client> lumina::createConfiguredClient(QObject* parent)
 		port,
 		parent,
 		lumina::useTls(),
-		lumina::verifyTls());
+		lumina::verifyTls(),
+		lumina::allowPlaintextFallback());
 }

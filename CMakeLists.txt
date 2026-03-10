@@ -99,6 +99,8 @@ target_compile_definitions(gamayun PRIVATE
     QT_NO_VERSION_TAGGING
     FMT_USE_CONSTEVAL=0
     FMT_HEADER_ONLY=1
+    GAMAYUN_BUILD_QT_VERSION=\"${Qt6_VERSION}\"
+    GAMAYUN_BUILD_QT_PLUGIN_PATH=\"${QT6_ROOT_PATH}/plugins\"
 )
 
 if(APPLE)

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "lumina/protocol.h"
+#include "lumina/settings.h"
 
 #include <array>
 #include <cstdint>
@@ -48,6 +49,8 @@ inline HelloRequest build_hello_request(uint32_t protocolVersion = kProtocolVers
     request.clientVersion = protocolVersion;
     request.key = build_client_key_bytes();
     request.licenseId = build_client_license_id();
+    request.username = getUsername();
+    request.password = getPassword();
     return request;
 }
 

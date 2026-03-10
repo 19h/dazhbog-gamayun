@@ -31,11 +31,14 @@ class GamayunModel : public QAbstractTableModel
 	Q_OBJECT
 
 	BinaryViewRef m_data;
+	const std::unordered_map<uint64_t, lumina::PullCacheEntry>* m_pullCache = nullptr;
 	std::vector<GamayunEntry> m_entries;
 
 public:
 	GamayunModel(QWidget* parent, BinaryViewRef data);
 
+	void setPullCache(const std::unordered_map<uint64_t, lumina::PullCacheEntry>* pullCache);
+	void notifyPullCacheChanged();
 	void refresh();
 	virtual int columnCount(const QModelIndex& parent = QModelIndex()) const override;
 	virtual int rowCount(const QModelIndex& parent = QModelIndex()) const override;
@@ -92,7 +95,7 @@ class GamayunWidget : public SidebarWidget
 	QPushButton* m_applyPulledAll = nullptr;
 
 	std::unordered_map<uint64_t, lumina::PullCacheEntry> m_pullCache;
-	bool m_hasComputedInitialCalcRel = false;
+	bool m_hasComputedInitialHashes = false;
 
 public:
 	GamayunWidget(ViewFrame* frame, BinaryViewRef data);
@@ -112,7 +115,7 @@ public Q_SLOTS:
 	void batchDiffAndApplySelected();
 
 private:
-	void computeCalcRelForAllFunctions();
+	void computeFunctionHashesForAllFunctions();
 };
 
 class GamayunWidgetType : public SidebarWidgetType

@@ -12,8 +12,11 @@
 
 #include <QDialog>
 #include <QDialogButtonBox>
+#include <QFont>
 #include <QGridLayout>
+#include <QImage>
 #include <QMessageBox>
+#include <QPainter>
 #include <QPlainTextEdit>
 #include <QStringList>
 #include <QVBoxLayout>
@@ -25,9 +28,9 @@
 
 namespace {
 
-std::array<uint8_t, 16> computeCalcRelHash(BinaryViewRef view, FunctionRef func)
+std::array<uint8_t, 16> computeFunctionHash(BinaryViewRef view, FunctionRef func)
 {
-	return lumina::computeCalcRelHash(view, func);
+	return lumina::computeFunctionHash(view, func);
 }
 
 std::unordered_map<uint64_t, FunctionRef> buildFunctionMap(BinaryViewRef data)
@@ -97,6 +100,39 @@ void showMetadataInspector(QWidget* parent, const QString& title, const QString&
 	dialog.exec();
 }
 
+QImage makeGamayunSidebarIcon()
+{
+	constexpr int size = 28;
+	QImage image(size, size, QImage::Format_ARGB32_Premultiplied);
+	image.fill(Qt::transparent);
+
+	QPainter painter(&image);
+	painter.setRenderHint(QPainter::Antialiasing, true);
+
+	const QRectF bounds(2.0, 2.0, size - 4.0, size - 4.0);
+	QLinearGradient gradient(bounds.topLeft(), bounds.bottomRight());
+	gradient.setColorAt(0.0, QColor(0x0f, 0x4c, 0x81));
+	gradient.setColorAt(1.0, QColor(0x1f, 0x78, 0x8e));
+	painter.setPen(Qt::NoPen);
+	painter.setBrush(gradient);
+	painter.drawRoundedRect(bounds, 7.0, 7.0);
+
+	QPen border(QColor(255, 255, 255, 48));
+	border.setWidthF(1.0);
+	painter.setPen(border);
+	painter.setBrush(Qt::NoBrush);
+	painter.drawRoundedRect(bounds.adjusted(0.5, 0.5, -0.5, -0.5), 7.0, 7.0);
+
+	QFont font;
+	font.setBold(true);
+	font.setPixelSize(17);
+	painter.setFont(font);
+	painter.setPen(QColor(0xf8, 0xf3, 0xe6));
+	painter.drawText(bounds.adjusted(0.0, -0.5, 0.0, 0.0), Qt::AlignCenter, QStringLiteral("G"));
+
+	return image;
+}
+
 }  // namespace
 
 // GamayunWidget implementation
@@ -110,6 +146,7 @@ GamayunWidget::GamayunWidget(ViewFrame* frame, BinaryViewRef data)
 	// Create table
 	m_table = new GamayunTableView(this, frame, data);
 	m_model = static_cast<GamayunModel*>(m_table->model());
+	m_model->setPullCache(&m_pullCache);
 	layout->addWidget(m_table, 1);
 
 	// Create compact button bar with just essential buttons
@@ -147,25 +184,25 @@ GamayunWidget::GamayunWidget(ViewFrame* frame, BinaryViewRef data)
 
 	setLayout(layout);
 
-	// Register for analysis completion event to compute CalcRel for all functions
+	// Register for analysis completion event to compute function hashes for all functions
 	if (m_data)
 	{
 		// Always register a completion callback - it will fire when current/next analysis completes
 		BinaryNinja::LogInfo("[Lumina] Registering for analysis completion callback...");
 		m_data->AddAnalysisCompletionEvent([this]() {
-			if (!m_hasComputedInitialCalcRel)
+			if (!m_hasComputedInitialHashes)
 			{
-				m_hasComputedInitialCalcRel = true;
-				computeCalcRelForAllFunctions();
+				m_hasComputedInitialHashes = true;
+				computeFunctionHashesForAllFunctions();
 			}
 		});
 
 		// Also check if initial analysis already completed (widget opened after analysis)
-		if (m_data->HasInitialAnalysis() && !m_hasComputedInitialCalcRel)
+		if (m_data->HasInitialAnalysis() && !m_hasComputedInitialHashes)
 		{
-			BinaryNinja::LogInfo("[Lumina] Initial analysis already complete, computing CalcRel...");
-			m_hasComputedInitialCalcRel = true;
-			computeCalcRelForAllFunctions();
+			BinaryNinja::LogInfo("[Lumina] Initial analysis already complete, computing function hashes...");
+			m_hasComputedInitialHashes = true;
+			computeFunctionHashesForAllFunctions();
 		}
 	}
 }
@@ -182,17 +219,18 @@ void GamayunWidget::notifyViewChanged(ViewFrame* frame)
 			m_data = view->getData();
 		}
 	}
+	m_pullCache.clear();
 
 	// Refresh the model silently (without triggering Lumina extraction)
 	if (m_model && m_data)
 		m_model->refresh();
 
 	// Fallback: check if initial analysis completed and we haven't computed yet
-	if (m_data && !m_hasComputedInitialCalcRel && m_data->HasInitialAnalysis())
+	if (m_data && !m_hasComputedInitialHashes && m_data->HasInitialAnalysis())
 	{
-		BinaryNinja::LogInfo("[Lumina] Initial analysis detected in notifyViewChanged, computing CalcRel...");
-		m_hasComputedInitialCalcRel = true;
-		computeCalcRelForAllFunctions();
+		BinaryNinja::LogInfo("[Lumina] Initial analysis detected in notifyViewChanged, computing function hashes...");
+		m_hasComputedInitialHashes = true;
+		computeFunctionHashesForAllFunctions();
 	}
 }
 
@@ -210,7 +248,7 @@ void GamayunWidget::notifyOffsetChanged(uint64_t offset)
 	std::string funcName = func->GetSymbol() ? func->GetSymbol()->GetFullName() : "<unnamed>";
 	uint64_t funcStart = func->GetStart();
 
-	// Compute CalcRel hash
+	// Compute function hash
 	lumina::PatternResult pattern = lumina::computePattern(m_data, func);
 
 	if (pattern.success)
@@ -222,7 +260,7 @@ void GamayunWidget::notifyOffsetChanged(uint64_t offset)
 			snprintf(hashStr + i * 2, 3, "%02x", pattern.hash[i]);
 		}
 
-		BinaryNinja::LogInfo("[Lumina] %s @ 0x%llx | CalcRel: %s | Size: %u bytes",
+		BinaryNinja::LogInfo("[Lumina] %s @ 0x%llx | Function Hash: %s | Size: %u bytes",
 			funcName.c_str(),
 			(unsigned long long)funcStart,
 			hashStr,
@@ -235,11 +273,11 @@ void GamayunWidget::notifyFontChanged()
 	m_table->updateFont();
 }
 
-void GamayunWidget::computeCalcRelForAllFunctions()
+void GamayunWidget::computeFunctionHashesForAllFunctions()
 {
 	if (!m_data)
 	{
-		BinaryNinja::LogWarn("[Lumina] Cannot compute CalcRel: no BinaryView");
+		BinaryNinja::LogWarn("[Lumina] Cannot compute function hashes: no BinaryView");
 		return;
 	}
 
@@ -251,7 +289,7 @@ void GamayunWidget::computeCalcRelForAllFunctions()
 	}
 
 	BinaryNinja::LogInfo("[Lumina] ========================================");
-	BinaryNinja::LogInfo("[Lumina] Computing CalcRel for %zu functions...", functions.size());
+	BinaryNinja::LogInfo("[Lumina] Computing function hashes for %zu functions...", functions.size());
 	BinaryNinja::LogInfo("[Lumina] ========================================");
 
 	size_t success = 0;
@@ -326,7 +364,7 @@ void GamayunWidget::pullSelectedLumina()
 				pullFilter.reason.c_str());
 			continue;
 		}
-		hashes.push_back(computeCalcRelHash(m_data, it->second));
+		hashes.push_back(computeFunctionHash(m_data, it->second));
 		addrs.push_back(e->address);
 	}
 	if (hashes.empty()) { QMessageBox::information(this, "Lumina Pull", "No functions resolved."); return; }
@@ -358,6 +396,8 @@ void GamayunWidget::pullSelectedLumina()
 			.arg(hashes.size())
 			.arg(found)
 			.arg(skippedCount > 0 ? QString("\nSkipped %1 function(s) due to the reliability filter.").arg(skippedCount) : QString()));
+	if (m_model)
+		m_model->notifyPullCacheChanged();
 }
 
 void GamayunWidget::pullAllLumina()
@@ -394,7 +434,7 @@ void GamayunWidget::pullAllLumina()
 			continue;
 		}
 
-		auto hash = computeCalcRelHash(m_data, func);
+		auto hash = computeFunctionHash(m_data, func);
 		// Skip zero hashes (failed pattern generation)
 		bool isZero = true;
 		for (auto b : hash) { if (b != 0) { isZero = false; break; } }
@@ -447,6 +487,8 @@ void GamayunWidget::pullAllLumina()
 	}
 
 	BinaryNinja::LogInfo("[Lumina] Pull All complete: %zu queried, %zu found", hashes.size(), found);
+	if (m_model)
+		m_model->notifyPullCacheChanged();
 	QMessageBox::information(this, "Lumina Pull All",
 		QString("Queried %1 functions.\nFound metadata for %2.\nUse 'Apply' to apply changes.")
 			.arg(hashes.size()).arg(found));
@@ -702,7 +744,7 @@ void GamayunWidget::batchDiffAndApplySelected()
 
 // GamayunWidgetType implementation
 GamayunWidgetType::GamayunWidgetType()
-	: SidebarWidgetType(QImage(), "Gamayun")
+	: SidebarWidgetType(makeGamayunSidebarIcon(), "Gamayun")
 {
 }
 

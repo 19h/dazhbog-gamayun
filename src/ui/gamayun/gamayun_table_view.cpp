@@ -44,7 +44,7 @@ GamayunTableView::GamayunTableView(QWidget* parent, ViewFrame* frame, BinaryView
 
 	connect(this, &QTableView::doubleClicked, this, &GamayunTableView::onRowDoubleClicked);
 
-	// Connect clicked signal to print CalcRel hash when a row is clicked
+	// Connect clicked signal to print a function hash when a row is clicked
 	connect(this, &QTableView::clicked, this, &GamayunTableView::onRowClicked);
 }
 
@@ -129,7 +129,7 @@ void GamayunTableView::onRowClicked(const QModelIndex& index)
 	if (!func)
 		return;
 
-	// Compute CalcRel hash
+	// Compute function hash
 	lumina::PatternResult pattern = lumina::computePattern(m_data, func);
 
 	if (pattern.success)
@@ -144,7 +144,7 @@ void GamayunTableView::onRowClicked(const QModelIndex& index)
 		}
 
 		// Use LogAlert for visibility - shows in log with alert icon
-		BinaryNinja::LogAlert("[Lumina] %s @ 0x%llx | CalcRel: %s | Size: %u bytes",
+		BinaryNinja::LogAlert("[Lumina] %s @ 0x%llx | Function Hash: %s | Size: %u bytes",
 			entryName.c_str(),
 			(unsigned long long)entry.address,
 			hashStr,

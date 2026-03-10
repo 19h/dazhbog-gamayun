@@ -2,6 +2,8 @@
 
 #include "binaryninjaapi.h"
 
+#include <cstdlib>
+
 namespace lumina {
 
 void registerSettings()
@@ -49,6 +51,30 @@ void registerSettings()
         "\"description\": \"Verify the server TLS certificate (disable for self-signed)\""
         "}");
 
+    settings->RegisterSetting(SETTING_USERNAME,
+        "{"
+        "\"title\": \"Username\","
+        "\"type\": \"string\","
+        "\"default\": \"guest\","
+        "\"description\": \"Lumina username. Overridden by BN_LUMINA_USERNAME. Defaults to guest when blank.\""
+        "}");
+
+    settings->RegisterSetting(SETTING_PASSWORD,
+        "{"
+        "\"title\": \"Password\","
+        "\"type\": \"string\","
+        "\"default\": \"\","
+        "\"description\": \"Lumina password. Overridden by BN_LUMINA_PASSWORD. Stored as plain text in settings.\""
+        "}");
+
+    settings->RegisterSetting(SETTING_ALLOW_PLAINTEXT_FALLBACK,
+        "{"
+        "\"title\": \"Allow Plaintext Fallback\","
+        "\"type\": \"boolean\","
+        "\"default\": false,"
+        "\"description\": \"If TLS initialization fails locally, retry the Lumina connection without TLS\""
+        "}");
+
     // Auto-query after analysis
     settings->RegisterSetting(SETTING_AUTO_QUERY,
         "{"
@@ -67,6 +93,14 @@ void registerSettings()
         "\"minValue\": 1000,"
         "\"maxValue\": 300000,"
         "\"description\": \"Timeout in milliseconds for Lumina server connections\""
+        "}");
+
+    settings->RegisterSetting(SETTING_QT_PLUGIN_PATH,
+        "{"
+        "\"title\": \"Qt TLS Plugin Path\","
+        "\"type\": \"string\","
+        "\"default\": \"\","
+        "\"description\": \"Optional extra Qt plugin directory to search for TLS backends\""
         "}");
 
     BinaryNinja::LogInfo("[Lumina] Settings registered");
@@ -92,6 +126,28 @@ bool verifyTls()
     return BinaryNinja::Settings::Instance()->Get<bool>(SETTING_VERIFY_TLS);
 }
 
+std::string getUsername()
+{
+    if (const char* envUsername = std::getenv("BN_LUMINA_USERNAME"))
+        return *envUsername != '\0' ? std::string(envUsername) : std::string("guest");
+
+    const std::string username = BinaryNinja::Settings::Instance()->Get<std::string>(SETTING_USERNAME);
+    return username.empty() ? std::string("guest") : username;
+}
+
+std::string getPassword()
+{
+    if (const char* envPassword = std::getenv("BN_LUMINA_PASSWORD"))
+        return std::string(envPassword);
+
+    return BinaryNinja::Settings::Instance()->Get<std::string>(SETTING_PASSWORD);
+}
+
+bool allowPlaintextFallback()
+{
+    return BinaryNinja::Settings::Instance()->Get<bool>(SETTING_ALLOW_PLAINTEXT_FALLBACK);
+}
+
 bool autoQueryOnAnalysis()
 {
 	return BinaryNinja::Settings::Instance()->Get<bool>(SETTING_AUTO_QUERY);
@@ -100,6 +156,11 @@ bool autoQueryOnAnalysis()
 int getTimeoutMs()
 {
     return static_cast<int>(BinaryNinja::Settings::Instance()->Get<int64_t>(SETTING_TIMEOUT));
+}
+
+std::string getQtPluginPath()
+{
+    return BinaryNinja::Settings::Instance()->Get<std::string>(SETTING_QT_PLUGIN_PATH);
 }
 
 } // namespace lumina

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Verify OUR reverse-engineered CalcRel masking algorithm against IDA's dumps.
+Verify our reverse-engineered masking algorithm against IDA dumps.
 
 This implements the 7 UNIVERSAL rules that achieve 98.76% match rate across
 77,575 IDA function dumps from multiple binaries.
@@ -26,9 +26,9 @@ import argparse
 DUMP_DIR = Path("/tmp/lumina_dump")
 
 
-def compute_calcrel_mask(raw_bytes, func_start):
+def compute_signature_mask(raw_bytes, func_start):
     """
-    Compute CalcRel mask using 7 universal rules.
+    Compute a function-signature mask using 7 universal rules.
 
     Rules:
     1. RIP-relative external displacements
@@ -121,8 +121,8 @@ def compute_calcrel_mask(raw_bytes, func_start):
     return bytes(mask)
 
 
-def compute_calcrel_hash(raw_bytes, mask):
-    """Compute CalcRel hash: MD5(normalized || mask)."""
+def compute_signature_hash(raw_bytes, mask):
+    """Compute a function hash: MD5(normalized || mask)."""
     normalized = bytes(b & ~m for b, m in zip(raw_bytes, mask))
     return hashlib.md5(normalized + mask).hexdigest()
 
@@ -166,8 +166,8 @@ def process_file(filepath):
 
     name, func_start, ida_hash, raw_bytes, ida_mask = data
 
-    our_mask = compute_calcrel_mask(raw_bytes, func_start)
-    our_hash = compute_calcrel_hash(raw_bytes, our_mask)
+    our_mask = compute_signature_mask(raw_bytes, func_start)
+    our_hash = compute_signature_hash(raw_bytes, our_mask)
 
     if our_hash == ida_hash:
         return {"status": "match", "name": name}
@@ -189,7 +189,7 @@ def process_file(filepath):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Verify CalcRel algorithm against IDA dumps"
+        description="Verify masking algorithm against IDA dumps"
     )
     parser.add_argument(
         "--dump-dir",

@@ -35,8 +35,14 @@ public:
         quint16 port,
         QObject* parent = nullptr,
         bool useTls = false,
-        bool verifyTls = true)
-        : QObject(parent), m_host(host), m_port(port), m_useTls(useTls), m_verifyTls(verifyTls)
+        bool verifyTls = true,
+        bool allowPlaintextFallback = false)
+        : QObject(parent),
+          m_host(host),
+          m_port(port),
+          m_useTls(useTls),
+          m_verifyTls(verifyTls),
+          m_allowPlaintextFallback(allowPlaintextFallback)
     {
     }
 
@@ -55,7 +61,9 @@ private:
     quint16 m_port;
     bool m_useTls;
     bool m_verifyTls;
+    bool m_allowPlaintextFallback;
 
+    std::unique_ptr<QTcpSocket> createPlainSocket(QString* err, int timeoutMs);
     std::unique_ptr<QTcpSocket> createSocket(QString* err, int timeoutMs);
     bool performHello(QTcpSocket& socket, const HelloRequest& helloRequest, QString* err, int timeoutMs);
 

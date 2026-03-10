@@ -1,6 +1,6 @@
 #pragma once
 /**
- * pattern_gen.h - Lumina-compatible CalcRel hash generation for Binary Ninja
+ * pattern_gen.h - Lumina-compatible function-hash generation for Binary Ninja
  *
  * This module implements the Lumina function signature algorithm which computes
  * a 16-byte MD5 hash that uniquely identifies a function's code pattern.
@@ -37,7 +37,7 @@ namespace lumina {
  * Result of pattern generation for a function
  */
 struct PatternResult {
-    std::array<uint8_t, 16> hash;       // 16-byte MD5 CalcRel hash
+    std::array<uint8_t, 16> hash;       // 16-byte MD5 function hash
     std::vector<uint8_t> normalized;    // Normalized bytes (raw & ~mask)
     std::vector<uint8_t> masks;         // Placeholder masks
     uint32_t func_size;                 // Total function size in bytes
@@ -100,7 +100,7 @@ public:
 
 /**
  * x86/x64 mask generator
- * Approximates IDA's procmod-driven CalcRel masking.
+ * Approximates IDA's procmod-driven Lumina masking.
  * - Near/far control flow is chunk-aware
  * - Direct memory forms are masked like IDA's o_mem operands
  * - Offset-like immediates/displacements use Binary Ninja-side heuristics
@@ -245,7 +245,7 @@ private:
 
 /**
  * Pattern generator class
- * Computes Lumina-compatible CalcRel hash for functions
+ * Computes Lumina-compatible function hashes for functions
  */
 class PatternGenerator {
 public:
@@ -253,7 +253,7 @@ public:
     ~PatternGenerator();
 
     /**
-     * Generate CalcRel hash pattern for a function
+     * Generate a function-hash pattern for a function
      *
      * @param func Function to process
      * @return PatternResult with hash and normalized bytes
@@ -294,15 +294,15 @@ private:
 };
 
 /**
- * Convenience function: compute CalcRel hash for a function
+ * Convenience function: compute a function hash for a function
  */
-std::array<uint8_t, 16> computeCalcRelHash(
+std::array<uint8_t, 16> computeFunctionHash(
     BinaryViewRef bv,
     FunctionRef func
 );
 
 /**
- * Convenience function: compute CalcRel hash with full result info
+ * Convenience function: compute a function hash with full result info
  */
 PatternResult computePattern(
     BinaryViewRef bv,

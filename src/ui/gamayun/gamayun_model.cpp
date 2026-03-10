@@ -12,6 +12,26 @@ constexpr int kNameColumn = 2;
 constexpr int kMetadataColumn = 3;
 constexpr int kColumnCount = 4;
 
+QString summarizeLocalMetadata(const GamayunEntry& entry)
+{
+	QStringList parts;
+	for (auto it = entry.metadata.begin(); it != entry.metadata.end(); ++it)
+		parts << it->first;
+	return parts.join(", ");
+}
+
+QString summarizePulledMetadata(const lumina::PullCacheEntry& cacheEntry)
+{
+	QStringList parts;
+	parts << QString("pulled");
+	if (!cacheEntry.remoteName.empty())
+		parts << QString::fromStdString(cacheEntry.remoteName);
+	parts << QString("%1 item(s)").arg(cacheEntry.metadata.componentCount());
+	if (!cacheEntry.metadata.ok())
+		parts << QString("parse issues: %1").arg(cacheEntry.metadata.errors.size());
+	return parts.join(", ");
+}
+
 }
 
 // GamayunModel implementation
@@ -19,6 +39,22 @@ GamayunModel::GamayunModel(QWidget* parent, BinaryViewRef data)
 	: QAbstractTableModel(parent), m_data(data)
 {
 	refresh();
+}
+
+void GamayunModel::setPullCache(const std::unordered_map<uint64_t, lumina::PullCacheEntry>* pullCache)
+{
+	m_pullCache = pullCache;
+	notifyPullCacheChanged();
+}
+
+void GamayunModel::notifyPullCacheChanged()
+{
+	if (m_entries.empty())
+		return;
+
+	emit dataChanged(
+		createIndex(0, kMetadataColumn),
+		createIndex(static_cast<int>(m_entries.size()) - 1, kMetadataColumn));
 }
 
 void GamayunModel::refresh()
@@ -58,12 +94,8 @@ void GamayunModel::refresh()
 			hasMetadata = true;
 		}
 
-		// Always add entries for demonstration, even without metadata
-		// In a real implementation, you might only add functions with metadata
-		if (hasMetadata || functions.size() < 50) // Limit display for large binaries
-		{
-			m_entries.push_back(entry);
-		}
+		(void)hasMetadata;
+		m_entries.push_back(entry);
 	}
 	
 	endResetModel();
@@ -102,10 +134,19 @@ QVariant GamayunModel::data(const QModelIndex& index, int role) const
 			return entry.name;
 		case kMetadataColumn:
 			{
-				QStringList keys;
-				for (auto it = entry.metadata.begin(); it != entry.metadata.end(); ++it)
-					keys << it->first;
-				return keys.join(", ");
+				QStringList summaries;
+				const QString localSummary = summarizeLocalMetadata(entry);
+				if (!localSummary.isEmpty())
+					summaries << localSummary;
+
+				if (m_pullCache != nullptr)
+				{
+					auto it = m_pullCache->find(entry.address);
+					if (it != m_pullCache->end() && it->second.have)
+						summaries << summarizePulledMetadata(it->second);
+				}
+
+				return summaries.join(" | ");
 			}
 		}
 	}

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-Compare IDA per-instruction CalcRel relbits with Binary Ninja debug mask dumps.
+Compare IDA per-instruction mask bits with Binary Ninja debug mask dumps.
 
 Usage:
   python3 tools/compare/compare_instruction_masks.py \
     --ida-csv /path/to/out.csv \
     --binja-dir /tmp/lumina_debug
 
-The IDA CSV must be produced with `ida_lumina_debug --calcrel-insns`.
+The IDA CSV must come from the instruction-mask dump mode of the IDA helper.
 The Binary Ninja dump directory must contain `func_*.txt` files produced with
 `LUMINA_DEBUG=1`.
 """
@@ -106,7 +106,7 @@ def parse_ida_csv(path: pathlib.Path) -> List[FunctionMasks]:
                     ea=int(row["ea"], 16),
                     name=name,
                     instructions=parse_instruction_field(
-                        row.get("instruction_calcrel", "")
+                        next((value for key, value in row.items() if key.startswith("instruction_") and value), "")
                     ),
                 )
             )
@@ -297,13 +297,13 @@ def print_detail_block(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Compare IDA relbits with Binary Ninja debug masks"
+        description="Compare IDA instruction masks with Binary Ninja debug masks"
     )
     parser.add_argument(
         "--ida-csv",
         required=True,
         type=pathlib.Path,
-        help="ida_lumina_debug CSV produced with --calcrel-insns",
+        help="ida_lumina_debug instruction-mask CSV",
     )
     parser.add_argument(
         "--binja-dir",

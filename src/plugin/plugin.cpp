@@ -9,7 +9,36 @@
 
 #include <cstdio>
 
+#include "sidebar.h"
+#include "uicontext.h"
+
 class View;
+
+namespace {
+
+void activateGamayunSidebar(BinaryNinja::BinaryView* view)
+{
+	BinaryNinja::ExecuteOnMainThread([view]() {
+		UIContext* context = UIContext::activeContext();
+		if (context == nullptr)
+		{
+			BinaryNinja::LogWarn("[Lumina] Unable to show Gamayun: no active UI context");
+			return;
+		}
+
+		Sidebar* sidebar = context->sidebar();
+		if (sidebar == nullptr)
+		{
+			BinaryNinja::LogWarn("[Lumina] Unable to show Gamayun: no sidebar is available in the current context");
+			return;
+		}
+
+		sidebar->activate(QStringLiteral("Gamayun"));
+		(void)view;
+	});
+}
+
+}  // namespace
 
 // Lumina metadata extraction and logging
 void extractAndLogLuminaMetadata(BinaryViewRef data, ViewFrame* frame)
@@ -170,16 +199,16 @@ void extractAndLogLuminaMetadata(BinaryViewRef data, ViewFrame* frame)
 		BinaryNinja::LogInfo("  No HLIL available");
 	}
 
-	// 8. LUMINA CALCREL PATTERN GENERATION
-	fprintf(stderr, "\n[8] LUMINA CALCREL PATTERN GENERATION:\n");
-	BinaryNinja::LogInfo("[8] LUMINA CALCREL PATTERN GENERATION:");
+	// 8. LUMINA FUNCTION HASH GENERATION
+	fprintf(stderr, "\n[8] LUMINA FUNCTION HASH GENERATION:\n");
+	BinaryNinja::LogInfo("[8] LUMINA FUNCTION HASH GENERATION:");
 
 	// Generate pattern with full details
 	lumina::PatternResult pattern = lumina::computePattern(data, func);
 
 	if (pattern.success)
 	{
-		// Print CalcRel hash
+		// Print function hash
 		std::string hashStr;
 		for (size_t i = 0; i < pattern.hash.size(); i++)
 		{
@@ -187,11 +216,11 @@ void extractAndLogLuminaMetadata(BinaryViewRef data, ViewFrame* frame)
 			snprintf(hexByte, sizeof(hexByte), "%02x", pattern.hash[i]);
 			hashStr += hexByte;
 		}
-		fprintf(stderr, "  CalcRel Hash: %s\n", hashStr.c_str());
+		fprintf(stderr, "  Function Hash: %s\n", hashStr.c_str());
 		fprintf(stderr, "  Function Size: %u bytes\n", pattern.func_size);
 		fprintf(stderr, "  Normalized Bytes: %zu bytes\n", pattern.normalized.size());
 		fprintf(stderr, "  Hash = MD5(normalized || masks) [IDA-compatible]\n");
-		BinaryNinja::LogInfo("  CalcRel Hash: %s", hashStr.c_str());
+		BinaryNinja::LogInfo("  Function Hash: %s", hashStr.c_str());
 		BinaryNinja::LogInfo("  Function Size: %u bytes", pattern.func_size);
 		BinaryNinja::LogInfo("  Normalized Bytes: %zu bytes", pattern.normalized.size());
 		BinaryNinja::LogInfo("  Hash = MD5(normalized || masks) [IDA-compatible]");
@@ -253,7 +282,7 @@ void extractAndLogLuminaMetadata(BinaryViewRef data, ViewFrame* frame)
 	BinaryNinja::LogInfo("Plugin successfully extracted basic Lumina-relevant metadata");
 }
 
-// Helper to compute CalcRel hash for a function and return as hex string
+// Helper to compute a function hash for a function and return it as hex
 static std::string computeHashString(BinaryViewRef bvRef, FunctionRef func)
 {
 	lumina::PatternResult pattern = lumina::computePattern(bvRef, func);
@@ -383,7 +412,7 @@ static void onInitialAnalysisComplete(BinaryNinja::BinaryView* view)
 		return;
 
 	BinaryNinja::LogInfo("[Lumina] ========================================");
-	BinaryNinja::LogInfo("[Lumina] Initial analysis complete - computing CalcRel for all functions");
+	BinaryNinja::LogInfo("[Lumina] Initial analysis complete - computing function hashes for all functions");
 	BinaryNinja::LogInfo("[Lumina] ========================================");
 
 	auto functions = view->GetAnalysisFunctionList();
@@ -393,7 +422,7 @@ static void onInitialAnalysisComplete(BinaryNinja::BinaryView* view)
 		return;
 	}
 
-	BinaryNinja::LogInfo("[Lumina] Computing CalcRel for %zu functions...", functions.size());
+	BinaryNinja::LogInfo("[Lumina] Computing function hashes for %zu functions...", functions.size());
 
 	// Create a BinaryViewRef from the raw pointer
 	BinaryViewRef bvRef = view;
@@ -457,6 +486,13 @@ extern "C"
 		// Register the widget type
 		Sidebar::addSidebarWidgetType(new GamayunWidgetType());
 
+		BinaryNinja::PluginCommand::Register(
+			"Gamayun\\Show Widget",
+			"Show or focus the Gamayun sidebar widget",
+			[](BinaryNinja::BinaryView* view) {
+				activateGamayunSidebar(view);
+			});
+
 		// Register global callback for when initial analysis completes on any binary
 		BinaryNinja::BinaryViewType::RegisterBinaryViewInitialAnalysisCompletionEvent(onInitialAnalysisComplete);
 
@@ -466,6 +502,9 @@ extern "C"
 			lumina::getPort(),
 			lumina::useTls() ? "yes" : "no",
 			lumina::verifyTls() ? "yes" : "no");
+		BinaryNinja::LogInfo("[Lumina] Auth user: %s (password: %s)",
+			lumina::getUsername().c_str(),
+			lumina::getPassword().empty() ? "empty" : "set");
 		BinaryNinja::LogInfo("[Lumina] Auto-query: %s", lumina::autoQueryOnAnalysis() ? "enabled" : "disabled");
 
 		return true;

@@ -454,7 +454,7 @@ InstructionMask X86MaskGenerator::getMask(
     bool shouldMaskImm = false;
     bool hasRipRelativeMemory = false;
 
-    // Approximate IDA pc/ana.cpp operand-driven calcrel logic:
+    // Approximate IDA pc/ana.cpp operand-driven masking logic:
     // - near/far control-flow operands -> mask when target leaves current chunk
     // - o_mem operands -> always mask their encoded bytes
     // - o_displ/o_imm -> mask only when they look like offsets
@@ -1652,7 +1652,7 @@ std::array<uint8_t, 16> PatternGenerator::computeMD5(
 // Convenience Functions
 // ============================================================================
 
-std::array<uint8_t, 16> computeCalcRelHash(
+std::array<uint8_t, 16> computeFunctionHash(
     BinaryViewRef bv,
     FunctionRef func)
 {

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Verify CalcRel hash computation on all IDA dumps in /tmp/lumina_dump.
+Verify function-hash computation on all IDA dumps in /tmp/lumina_dump.
 The dumps contain IDA's raw bytes, normalized bytes, and mask - we verify
 that MD5(normalized || mask) == stored_hash.
 """

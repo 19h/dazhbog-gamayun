@@ -5,8 +5,8 @@ Supported Python helpers live here and are grouped by purpose.
 - `tools/compare/compare_hashes.py`
   - Compare IDA push hashes with the plugin's `/tmp/lumina_debug/meta.log` output.
 - `tools/compare/compare_instruction_masks.py`
-  - Compare IDA `--calcrel-insns` output with Binary Ninja `func_*.txt` debug dumps instruction by instruction.
-  - For AArch64, pass `--ida-split-size 4` because IDA can emit CalcRel macro records spanning multiple 4-byte instructions.
+  - Compare IDA instruction-mask CSV output with Binary Ninja `func_*.txt` debug dumps instruction by instruction.
+  - For AArch64, pass `--ida-split-size 4` because IDA can emit multi-instruction macro records spanning multiple 4-byte instructions.
 - `tools/verify/verify_our_algorithm.py`
   - Re-run the current universal masking rules against an IDA dump corpus.
 - `tools/verify/verify_all_dumps.py`

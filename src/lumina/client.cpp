@@ -1,8 +1,11 @@
 #include "lumina/client.h"
 
+#include "binaryninjaapi.h"
 #include "lumina/settings.h"
 
+#include <QtCore/QCoreApplication>
 #include <QtCore/QDeadlineTimer>
+#include <QtCore/QDir>
 
 #include <array>
 #include <utility>
@@ -16,6 +19,144 @@ QString packetTypeString(PacketType type)
     return QStringLiteral("0x%1")
         .arg(static_cast<unsigned int>(static_cast<uint8_t>(type)), 2, 16, QLatin1Char('0'));
 }
+
+QString yesNo(bool value)
+{
+    return value ? QStringLiteral("yes") : QStringLiteral("no");
+}
+
+QString runtimeQtVersion()
+{
+    return QString::fromLatin1(qVersion());
+}
+
+QString buildQtVersion()
+{
+#ifdef GAMAYUN_BUILD_QT_VERSION
+    return QStringLiteral(GAMAYUN_BUILD_QT_VERSION);
+#else
+    return QStringLiteral("unknown");
+#endif
+}
+
+QString buildQtPluginPath()
+{
+#ifdef GAMAYUN_BUILD_QT_PLUGIN_PATH
+    return QStringLiteral(GAMAYUN_BUILD_QT_PLUGIN_PATH);
+#else
+    return QString();
+#endif
+}
+
+QString joinStrings(const QStringList& values)
+{
+    return values.isEmpty() ? QStringLiteral("<none>") : values.join(QStringLiteral(", "));
+}
+
+QStringList currentLibraryPaths()
+{
+    if (QCoreApplication::instance() == nullptr)
+        return {};
+    return QCoreApplication::libraryPaths();
+}
+
+void addLibraryPathIfPresent(const QString& path, QStringList* addedPaths)
+{
+    if ((QCoreApplication::instance() == nullptr) || path.isEmpty())
+        return;
+
+    QDir dir(path);
+    if (!dir.exists())
+        return;
+
+    const QString cleanPath = QDir::cleanPath(dir.absolutePath());
+    const QStringList libraryPaths = QCoreApplication::libraryPaths();
+    if (libraryPaths.contains(cleanPath))
+        return;
+
+    QCoreApplication::addLibraryPath(cleanPath);
+    if (addedPaths != nullptr)
+        addedPaths->push_back(cleanPath);
+}
+
+QStringList configureQtPluginPaths()
+{
+    QStringList addedPaths;
+    if (QCoreApplication::instance() == nullptr)
+        return addedPaths;
+
+    const QString appDir = QCoreApplication::applicationDirPath();
+    addLibraryPathIfPresent(QDir(appDir).absoluteFilePath(QStringLiteral("qt")), &addedPaths);
+    addLibraryPathIfPresent(QDir(appDir).absoluteFilePath(QStringLiteral("../PlugIns")), &addedPaths);
+    addLibraryPathIfPresent(QDir(appDir).absoluteFilePath(QStringLiteral("../Plugins")), &addedPaths);
+    addLibraryPathIfPresent(QString::fromStdString(lumina::getQtPluginPath()), &addedPaths);
+    addLibraryPathIfPresent(qEnvironmentVariable("BN_LUMINA_QT_PLUGIN_PATH"), &addedPaths);
+    addLibraryPathIfPresent(buildQtPluginPath(), &addedPaths);
+    return addedPaths;
+}
+
+#if LUMINA_HAS_SSL
+QString tlsEnvironmentSummary()
+{
+    return QStringLiteral("Qt build=%1, Qt runtime=%2, supportsSsl=%3, activeBackend=%4, availableBackends=[%5], libraryPaths=[%6]")
+        .arg(buildQtVersion())
+        .arg(runtimeQtVersion())
+        .arg(yesNo(QSslSocket::supportsSsl()))
+        .arg(QSslSocket::activeBackend().isEmpty() ? QStringLiteral("<none>") : QSslSocket::activeBackend())
+        .arg(joinStrings(QSslSocket::availableBackends()))
+        .arg(joinStrings(currentLibraryPaths()));
+}
+
+QString tlsUnavailableMessage()
+{
+    return QStringLiteral(
+        "TLS connection failed: no functional Qt TLS backend was found. %1. "
+        "Set `lumina.qt.pluginPath` or `BN_LUMINA_QT_PLUGIN_PATH` to a Qt plugin directory containing TLS backends.")
+        .arg(tlsEnvironmentSummary());
+}
+
+QString tlsFailureDetails(const QSslSocket& socket)
+{
+    QString message = socket.errorString();
+    const auto sslErrors = socket.sslHandshakeErrors();
+    if (!sslErrors.isEmpty())
+    {
+        message += QStringLiteral(" (SSL: ");
+        for (const auto& sslError : sslErrors)
+            message += sslError.errorString() + QStringLiteral("; ");
+        message += QLatin1Char(')');
+    }
+
+    return QStringLiteral("TLS connection failed: %1. %2").arg(message, tlsEnvironmentSummary());
+}
+
+bool shouldFallbackToPlaintext(const QString& message)
+{
+    return message.contains(QStringLiteral("TLS initialization failed"), Qt::CaseInsensitive)
+        || message.contains(QStringLiteral("No functional TLS backend"), Qt::CaseInsensitive)
+        || message.contains(QStringLiteral("The remote host closed the connection"), Qt::CaseInsensitive)
+        || message.contains(QStringLiteral("unexpected eof"), Qt::CaseInsensitive)
+        || message.contains(QStringLiteral("decode_error"), Qt::CaseInsensitive);
+}
+
+void logTlsEnvironmentOnce()
+{
+    static bool logged = false;
+    if (logged)
+        return;
+
+    logged = true;
+    const QStringList addedPaths = configureQtPluginPaths();
+    if (!addedPaths.isEmpty())
+    {
+        BinaryNinja::LogInfo(
+            "[Lumina] Added Qt plugin search path(s) for TLS: %s",
+            joinStrings(addedPaths).toStdString().c_str());
+    }
+
+    BinaryNinja::LogInfo("[Lumina] %s", tlsEnvironmentSummary().toStdString().c_str());
+}
+#endif
 
 bool readExact(QTcpSocket& socket, char* buffer, qint64 size, QString* err, QDeadlineTimer& deadline)
 {
@@ -56,7 +197,22 @@ Client* Client::fromSettings(QObject* parent)
         getPort(),
         parent,
         useTls(),
-        verifyTls());
+        verifyTls(),
+        allowPlaintextFallback());
+}
+
+std::unique_ptr<QTcpSocket> Client::createPlainSocket(QString* err, int timeoutMs)
+{
+    auto socket = std::make_unique<QTcpSocket>();
+    socket->connectToHost(m_host, m_port);
+    if (!socket->waitForConnected(timeoutMs))
+    {
+        if (err != nullptr)
+            *err = QStringLiteral("Connect failed: %1").arg(socket->errorString());
+        return nullptr;
+    }
+
+    return socket;
 }
 
 std::unique_ptr<QTcpSocket> Client::createSocket(QString* err, int timeoutMs)
@@ -64,6 +220,24 @@ std::unique_ptr<QTcpSocket> Client::createSocket(QString* err, int timeoutMs)
 #if LUMINA_HAS_SSL
     if (m_useTls)
     {
+        logTlsEnvironmentOnce();
+
+        if (!QSslSocket::supportsSsl() || QSslSocket::availableBackends().isEmpty())
+        {
+            const QString message = tlsUnavailableMessage();
+            if (m_allowPlaintextFallback)
+            {
+                BinaryNinja::LogWarn(
+                    "[Lumina] %s Falling back to plaintext because `lumina.server.allowPlaintextFallback` is enabled.",
+                    message.toStdString().c_str());
+                return createPlainSocket(err, timeoutMs);
+            }
+
+            if (err != nullptr)
+                *err = message;
+            return nullptr;
+        }
+
         auto socket = std::make_unique<QSslSocket>();
 
         if (!m_verifyTls)
@@ -77,19 +251,17 @@ std::unique_ptr<QTcpSocket> Client::createSocket(QString* err, int timeoutMs)
         socket->connectToHostEncrypted(m_host, m_port);
         if (!socket->waitForEncrypted(timeoutMs))
         {
-            if (err != nullptr)
+            const QString message = tlsFailureDetails(*socket);
+            if (m_allowPlaintextFallback && shouldFallbackToPlaintext(message))
             {
-                QString message = socket->errorString();
-                const auto sslErrors = socket->sslHandshakeErrors();
-                if (!sslErrors.isEmpty())
-                {
-                    message += QStringLiteral(" (SSL: ");
-                    for (const auto& sslError : sslErrors)
-                        message += sslError.errorString() + QStringLiteral("; ");
-                    message += QLatin1Char(')');
-                }
-                *err = QStringLiteral("TLS connection failed: %1").arg(message);
+                BinaryNinja::LogWarn(
+                    "[Lumina] %s Falling back to plaintext because `lumina.server.allowPlaintextFallback` is enabled.",
+                    message.toStdString().c_str());
+                return createPlainSocket(err, timeoutMs);
             }
+
+            if (err != nullptr)
+                *err = message;
             return nullptr;
         }
 
@@ -104,16 +276,7 @@ std::unique_ptr<QTcpSocket> Client::createSocket(QString* err, int timeoutMs)
     }
 #endif
 
-    auto socket = std::make_unique<QTcpSocket>();
-    socket->connectToHost(m_host, m_port);
-    if (!socket->waitForConnected(timeoutMs))
-    {
-        if (err != nullptr)
-            *err = QStringLiteral("Connect failed: %1").arg(socket->errorString());
-        return nullptr;
-    }
-
-    return socket;
+    return createPlainSocket(err, timeoutMs);
 }
 
 bool Client::performHello(QTcpSocket& socket, const HelloRequest& helloRequest, QString* err, int timeoutMs)
