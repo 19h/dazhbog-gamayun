@@ -1,6 +1,6 @@
 #pragma once
 
-#include "lumina_protocol.h"
+#include "lumina/protocol.h"
 
 #include <cstddef>
 #include <cstdint>

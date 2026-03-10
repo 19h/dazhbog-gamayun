@@ -1,4 +1,4 @@
-#include "bulkdiffdialog.h"
+#include "ui/dialogs/lumina_bulk_diff_dialog.h"
 
 static constexpr int COL_ADDR  = 0;
 static constexpr int COL_LNAME = 1;

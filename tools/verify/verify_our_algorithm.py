@@ -9,7 +9,7 @@ The remaining 1.24% mismatches are due to binary-specific immediate masking
 that IDA performs based on each binary's section layout.
 
 Usage:
-    python3 tools/verify_our_algorithm.py [--dump-dir /path/to/dumps]
+    python3 tools/verify/verify_our_algorithm.py [--dump-dir /path/to/dumps]
 """
 
 import hashlib

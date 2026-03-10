@@ -1,6 +1,6 @@
-#include "lumina_type_decoder.h"
+#include "lumina/type_decoder.h"
 
-#include "lumina_protocol.h"
+#include "lumina/protocol.h"
 
 #include <algorithm>
 #include <cctype>

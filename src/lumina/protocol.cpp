@@ -1,4 +1,4 @@
-#include "lumina_protocol.h"
+#include "lumina/protocol.h"
 
 #include <algorithm>
 

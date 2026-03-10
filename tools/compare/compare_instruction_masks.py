@@ -3,7 +3,7 @@
 Compare IDA per-instruction CalcRel relbits with Binary Ninja debug mask dumps.
 
 Usage:
-  python3 tools/compare_instruction_masks.py \
+  python3 tools/compare/compare_instruction_masks.py \
     --ida-csv /path/to/out.csv \
     --binja-dir /tmp/lumina_debug
 

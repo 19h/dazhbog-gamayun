@@ -1,5 +1,5 @@
-#include "pattern_gen.h"
-#include "debug_dump.h"
+#include "analysis/pattern_gen.h"
+#include "debug/debug_dump.h"
 #include <QCryptographicHash>
 #include <algorithm>
 #include <cstring>

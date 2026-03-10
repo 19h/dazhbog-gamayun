@@ -1,26 +1,23 @@
 #pragma once
 
-#include <QtCore/QAbstractItemModel>
-#include <QtWidgets/QTableView>
+#include <QtCore/QAbstractTableModel>
+#include <QtCore/QString>
+#include <QtCore/QVariant>
 #include <QtWidgets/QPushButton>
-#include <QtWidgets/QVBoxLayout>
-#include <QtWidgets/QHBoxLayout>
-#include <QtWidgets/QHeaderView>
-#include <QtWidgets/QMenu>
+#include <QtWidgets/QTableView>
+
+#include <cstdint>
 #include <map>
 #include <unordered_map>
+#include <vector>
+
 #include "binaryninjaapi.h"
+#include "lumina/pulled_metadata.h"
 #include "sidebarwidget.h"
 #include "viewframe.h"
-#include "fontsettings.h"
-#include "theme.h"
-#include "lumina_client.h"
-#include "lumina_metadata.h"
-#include "bulkdiffdialog.h"
 
-using namespace BinaryNinja;
+class QContextMenuEvent;
 
-// Structure to hold function metadata info
 struct GamayunEntry
 {
 	uint64_t address;
@@ -29,7 +26,6 @@ struct GamayunEntry
 	bool selected = false;
 };
 
-// Table model for displaying function metadata
 class GamayunModel : public QAbstractTableModel
 {
 	Q_OBJECT
@@ -41,7 +37,6 @@ public:
 	GamayunModel(QWidget* parent, BinaryViewRef data);
 
 	void refresh();
-	
 	virtual int columnCount(const QModelIndex& parent = QModelIndex()) const override;
 	virtual int rowCount(const QModelIndex& parent = QModelIndex()) const override;
 	virtual QVariant data(const QModelIndex& index, int role = Qt::DisplayRole) const override;
@@ -51,21 +46,19 @@ public:
 
 	GamayunEntry& entryAt(int row) { return m_entries[row]; }
 	const GamayunEntry& entryAt(int row) const { return m_entries[row]; }
-	
+
 	void selectAll();
 	void selectNone();
 	std::vector<GamayunEntry*> getSelectedEntries();
 };
 
-// Table view for function metadata
 class GamayunTableView : public QTableView
 {
 	Q_OBJECT
 
 	BinaryViewRef m_data;
-	ViewFrame* m_frame;
-	GamayunModel* m_model;
-	UIActionHandler m_actionHandler;
+	ViewFrame* m_frame = nullptr;
+	GamayunModel* m_model = nullptr;
 
 public:
 	GamayunTableView(QWidget* parent, ViewFrame* frame, BinaryViewRef data);
@@ -82,41 +75,23 @@ private Q_SLOTS:
 	void navigateToFunction();
 };
 
-// Main widget
 class GamayunWidget : public SidebarWidget
 {
 	Q_OBJECT
 
 	BinaryViewRef m_data;
-	ViewFrame* m_frame;
-	GamayunTableView* m_table;
-	GamayunModel* m_model;
-	
-	QPushButton* m_refreshButton;
-	QPushButton* m_rejectAllButton;
-	QPushButton* m_applySelectedButton;
-	QPushButton* m_applyAllButton;
-	QPushButton* m_pullSelected;
-	QPushButton* m_pullAll;
-	QPushButton* m_inspectPulled;
-	QPushButton* m_applyPulled;
-	QPushButton* m_applyPulledAll;
+	ViewFrame* m_frame = nullptr;
+	GamayunTableView* m_table = nullptr;
+	GamayunModel* m_model = nullptr;
 
-public:
-	// Cache pulled Lumina metadata per function start address.
-	struct PullCacheEntry {
-		bool have = false;
-		lumina::FunctionMetadata metadata;
-		uint32_t popularity = 0;
-		uint32_t len = 0;
-		std::string remoteName;
-		std::vector<uint8_t> raw;
-	};
+	QPushButton* m_refreshButton = nullptr;
+	QPushButton* m_pullSelected = nullptr;
+	QPushButton* m_pullAll = nullptr;
+	QPushButton* m_inspectPulled = nullptr;
+	QPushButton* m_applyPulled = nullptr;
+	QPushButton* m_applyPulledAll = nullptr;
 
-private:
-	std::unordered_map<uint64_t, PullCacheEntry> m_pullCache;
-
-	// Track if we've computed CalcRel for all functions after initial analysis
+	std::unordered_map<uint64_t, lumina::PullCacheEntry> m_pullCache;
 	bool m_hasComputedInitialCalcRel = false;
 
 public:
@@ -128,9 +103,6 @@ public:
 
 public Q_SLOTS:
 	void refreshMetadata();
-	void rejectAll();
-	void applySelected();
-	void applyAll();
 	void pullSelectedLumina();
 	void pullAllLumina();
 	void inspectPulledSelected();
@@ -143,18 +115,17 @@ private:
 	void computeCalcRelForAllFunctions();
 };
 
-// Widget type for registration
 class GamayunWidgetType : public SidebarWidgetType
 {
 public:
 	GamayunWidgetType();
-	
+
 	virtual SidebarWidget* createWidget(ViewFrame* frame, BinaryViewRef data) override;
 	virtual SidebarContextSensitivity contextSensitivity() const override
 	{
 		return SelfManagedSidebarContext;
 	}
-	
+
 	virtual SidebarWidgetLocation defaultLocation() const override
 	{
 		return RightContent;

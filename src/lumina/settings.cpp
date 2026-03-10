@@ -1,4 +1,6 @@
-#include "lumina_settings.h"
+#include "lumina/settings.h"
+
+#include "binaryninjaapi.h"
 
 namespace lumina {
 

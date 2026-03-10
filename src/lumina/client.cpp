@@ -1,6 +1,6 @@
-#include "lumina_client.h"
+#include "lumina/client.h"
 
-#include "lumina_settings.h"
+#include "lumina/settings.h"
 
 #include <QtCore/QDeadlineTimer>
 

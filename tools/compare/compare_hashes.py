@@ -3,7 +3,7 @@
 Compare IDA Lumina push hashes with hashes produced by the Binary Ninja plugin.
 
 Usage:
-  python3 tools/compare_hashes.py --push /path/to/push_*.txt --meta /tmp/lumina_debug/meta.log
+  python3 tools/compare/compare_hashes.py --push /path/to/push_*.txt --meta /tmp/lumina_debug/meta.log
 
 The script prints a summary and lists mismatching or missing functions.
 """

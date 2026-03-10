@@ -1,6 +1,6 @@
-#include "lumina_metadata.h"
+#include "lumina/metadata.h"
 
-#include "lumina_type_decoder.h"
+#include "lumina/type_decoder.h"
 
 #include <algorithm>
 #include <cctype>
