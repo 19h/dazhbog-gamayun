@@ -237,6 +237,45 @@ static bool parseStackTypeFromMetadata(
 	return parseNamedTypeDeclaration(func->GetView(), rendered.declaration, outType, error);
 }
 
+static BinaryNinja::Ref<BinaryNinja::Symbol> buildFunctionRenameSymbol(
+	FunctionRef func,
+	const std::string& rawName)
+{
+	if (!func || rawName.empty())
+		return nullptr;
+
+	auto view = func->GetView();
+	auto arch = view ? view->GetDefaultArchitecture() : nullptr;
+	auto currentSymbol = func->GetSymbol();
+
+	BNSymbolType symbolType = FunctionSymbol;
+	BNSymbolBinding binding = NoBinding;
+	BinaryNinja::NameSpace nameSpace;
+	if (currentSymbol)
+	{
+		symbolType = currentSymbol->GetType();
+		binding = currentSymbol->GetBinding();
+		nameSpace = currentSymbol->GetNameSpace();
+	}
+
+	std::string shortName = rawName;
+	std::string fullName = rawName;
+	if (arch)
+	{
+		BinaryNinja::QualifiedName demangledName;
+		BinaryNinja::Ref<BinaryNinja::Type> demangledType;
+		if (BinaryNinja::DemangleGeneric(arch, rawName, demangledType, demangledName, view, true))
+		{
+			shortName = demangledName.GetString();
+			fullName = shortName;
+			if (demangledType)
+				fullName += demangledType->GetStringAfterName();
+		}
+	}
+
+	return new BinaryNinja::Symbol(symbolType, shortName, fullName, rawName, func->GetStart(), binding, nameSpace);
+}
+
 static std::vector<int64_t> candidateFrameOffsets(
 	const lumina::FrameDescription& frame,
 	const lumina::FrameMember& member,
@@ -389,24 +428,23 @@ bool lumina::applyMetadata(
 	// Apply function name if available and different from current
 	if (!cache.remoteName.empty()) {
 		std::string currentName = func->GetSymbol() ? func->GetSymbol()->GetShortName() : "";
+		std::string currentRawName = func->GetSymbol() ? func->GetSymbol()->GetRawName() : "";
 		// Only rename if current name is auto-generated (sub_*, func_*, etc.) or empty
 		bool isAutoName = currentName.empty() ||
 		                  currentName.find("sub_") == 0 ||
 		                  currentName.find("func_") == 0 ||
 		                  currentName.find("j_") == 0;
-		if (isAutoName || currentName != cache.remoteName) {
-			// Create a new function symbol with the Lumina name
-				auto sym = new BinaryNinja::Symbol(
-					FunctionSymbol,
-				cache.remoteName,
-				func->GetStart()
-			);
-			view->DefineUserSymbol(sym);
-			stats.namesApplied++;
-			applied = true;
-			BinaryNinja::LogInfo("[Lumina] Renamed 0x%llx: %s -> %s",
-				(unsigned long long)func->GetStart(),
-				currentName.c_str(), cache.remoteName.c_str());
+		if (isAutoName || currentRawName != cache.remoteName) {
+			auto sym = buildFunctionRenameSymbol(func, cache.remoteName);
+			if (sym)
+			{
+				view->DefineUserSymbol(sym);
+				stats.namesApplied++;
+				applied = true;
+				BinaryNinja::LogInfo("[Lumina] Renamed 0x%llx: %s -> %s",
+					(unsigned long long)func->GetStart(),
+					currentName.c_str(), cache.remoteName.c_str());
+			}
 		}
 	}
 

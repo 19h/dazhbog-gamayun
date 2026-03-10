@@ -41,6 +41,12 @@ GamayunModel::GamayunModel(QWidget* parent, BinaryViewRef data)
 	refresh();
 }
 
+void GamayunModel::setBinaryView(BinaryViewRef data)
+{
+	m_data = data;
+	refresh();
+}
+
 void GamayunModel::setPullCache(const std::unordered_map<uint64_t, lumina::PullCacheEntry>* pullCache)
 {
 	m_pullCache = pullCache;

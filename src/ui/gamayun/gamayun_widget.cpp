@@ -17,6 +17,7 @@
 #include <QImage>
 #include <QMessageBox>
 #include <QPainter>
+#include <QtCore/qpointer.h>
 #include <QPlainTextEdit>
 #include <QStringList>
 #include <QVBoxLayout>
@@ -24,6 +25,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <sstream>
+#include <thread>
 #include <utility>
 
 namespace {
@@ -59,6 +61,23 @@ void cachePulledFunction(
 	cacheEntry.raw = pulledFunction.data;
 	pullCache[address] = std::move(cacheEntry);
 }
+
+struct PullResult
+{
+	bool success = false;
+	QString error;
+	size_t requested = 0;
+	size_t found = 0;
+	size_t skipped = 0;
+	std::unordered_map<uint64_t, lumina::PullCacheEntry> cacheUpdates;
+};
+
+struct ApplyResult
+{
+	size_t applied = 0;
+	size_t missing = 0;
+	lumina::ApplyStats stats;
+};
 
 QString formatApplyStatsDetails(const lumina::ApplyStats& stats)
 {
@@ -139,12 +158,19 @@ QImage makeGamayunSidebarIcon()
 GamayunWidget::GamayunWidget(ViewFrame* frame, BinaryViewRef data)
 	: SidebarWidget("Gamayun"), m_data(data), m_frame(frame)
 {
+	if (!m_data && frame)
+	{
+		auto view = frame->getCurrentViewInterface();
+		if (view)
+			m_data = view->getData();
+	}
+
 	QVBoxLayout* layout = new QVBoxLayout(this);
 	layout->setContentsMargins(4, 4, 4, 4);
 	layout->setSpacing(4);
 
 	// Create table
-	m_table = new GamayunTableView(this, frame, data);
+	m_table = new GamayunTableView(this, frame, m_data);
 	m_model = static_cast<GamayunModel*>(m_table->model());
 	m_model->setPullCache(&m_pullCache);
 	layout->addWidget(m_table, 1);
@@ -209,7 +235,9 @@ GamayunWidget::GamayunWidget(ViewFrame* frame, BinaryViewRef data)
 
 void GamayunWidget::notifyViewChanged(ViewFrame* frame)
 {
+	const BinaryViewRef previousData = m_data;
 	m_frame = frame;
+	m_data = nullptr;
 	if (frame)
 	{
 		// Update m_data from the current view in the frame
@@ -219,11 +247,15 @@ void GamayunWidget::notifyViewChanged(ViewFrame* frame)
 			m_data = view->getData();
 		}
 	}
+	if (previousData != m_data)
+		m_hasComputedInitialHashes = false;
 	m_pullCache.clear();
 
 	// Refresh the model silently (without triggering Lumina extraction)
-	if (m_model && m_data)
-		m_model->refresh();
+	if (m_table)
+		m_table->setContext(m_frame, m_data);
+	else if (m_model)
+		m_model->setBinaryView(m_data);
 
 	// Fallback: check if initial analysis completed and we haven't computed yet
 	if (m_data && !m_hasComputedInitialHashes && m_data->HasInitialAnalysis())
@@ -338,160 +370,288 @@ void GamayunWidget::refreshMetadata()
 		m_model->refresh();
 }
 
+void GamayunWidget::setBusyState(bool busy)
+{
+	m_busy = busy;
+	if (m_table)
+		m_table->setEnabled(!busy);
+	if (m_refreshButton)
+		m_refreshButton->setEnabled(!busy);
+	if (m_pullSelected)
+		m_pullSelected->setEnabled(!busy);
+	if (m_pullAll)
+		m_pullAll->setEnabled(!busy);
+	if (m_inspectPulled)
+		m_inspectPulled->setEnabled(!busy);
+	if (m_applyPulled)
+		m_applyPulled->setEnabled(!busy);
+	if (m_applyPulledAll)
+		m_applyPulledAll->setEnabled(!busy);
+}
+
+bool GamayunWidget::ensureIdle(const QString& action)
+{
+	if (!m_busy)
+		return true;
+
+	QMessageBox::information(this, "Gamayun Busy", QString("Please wait for the current %1 task to finish.").arg(action));
+	return false;
+}
+
 void GamayunWidget::pullSelectedLumina()
 {
+	if (!ensureIdle("Lumina"))
+		return;
 	if (!m_data) { QMessageBox::warning(this, "Lumina Pull", "No BinaryView"); return; }
 
 	auto selected = m_model->getSelectedEntries();
 	if (selected.empty()) { QMessageBox::information(this, "Lumina Pull", "No entries selected."); return; }
 
-	auto functionsByAddress = buildFunctionMap(m_data);
+	std::vector<uint64_t> selectedAddresses;
+	selectedAddresses.reserve(selected.size());
+	for (auto* entry : selected)
+		selectedAddresses.push_back(entry->address);
 
-	// Build hash list in the same order as 'selected'
-	std::vector<std::array<uint8_t,16>> hashes;
-	std::vector<uint64_t> addrs;
-	size_t skippedCount = 0;
-	hashes.reserve(selected.size());
-	addrs.reserve(selected.size());
-	for (auto* e : selected) {
-		auto it = functionsByAddress.find(e->address);
-		if (it == functionsByAddress.end()) continue;
-		auto pullFilter = lumina::shouldSkipPull(m_data, it->second);
-		if (pullFilter.shouldSkip) {
-			skippedCount++;
-			BinaryNinja::LogDebug("[Lumina] Pull filter: skipping %s - %s",
-				it->second->GetSymbol() ? it->second->GetSymbol()->GetShortName().c_str() : "<unnamed>",
-				pullFilter.reason.c_str());
-			continue;
+	QPointer<GamayunWidget> widget(this);
+	BinaryViewRef data = m_data;
+	auto task = BinaryNinja::Ref<BinaryNinja::BackgroundTask>(new BinaryNinja::BackgroundTask("Gamayun: Pulling selected Lumina metadata", false));
+	setBusyState(true);
+
+	std::thread([widget, task, data, selectedAddresses = std::move(selectedAddresses)]() mutable {
+		PullResult result;
+		try
+		{
+			auto functionsByAddress = buildFunctionMap(data);
+			std::vector<std::array<uint8_t, 16>> hashes;
+			std::vector<uint64_t> addrs;
+			hashes.reserve(selectedAddresses.size());
+			addrs.reserve(selectedAddresses.size());
+
+			for (size_t i = 0; i < selectedAddresses.size(); ++i)
+			{
+				task->SetProgressText("Gamayun: Preparing selected Lumina queries");
+				auto it = functionsByAddress.find(selectedAddresses[i]);
+				if (it == functionsByAddress.end())
+					continue;
+
+				auto pullFilter = lumina::shouldSkipPull(data, it->second);
+				if (pullFilter.shouldSkip)
+				{
+					result.skipped++;
+					BinaryNinja::LogDebug("[Lumina] Pull filter: skipping %s - %s",
+						it->second->GetSymbol() ? it->second->GetSymbol()->GetShortName().c_str() : "<unnamed>",
+						pullFilter.reason.c_str());
+					continue;
+				}
+
+				hashes.push_back(computeFunctionHash(data, it->second));
+				addrs.push_back(selectedAddresses[i]);
+			}
+
+			result.requested = hashes.size();
+			if (hashes.empty())
+			{
+				result.success = true;
+			}
+			else
+			{
+				task->SetProgressText("Gamayun: Fetching selected Lumina metadata");
+				const auto hello = lumina::build_hello_request();
+				const auto pull = lumina::build_pull_request(0, hashes);
+				auto cli = lumina::createConfiguredClient(nullptr);
+				std::vector<lumina::OperationResult> statuses;
+				std::vector<lumina::PulledFunction> funcs;
+				if (!cli->helloAndPull(hello, pull, &result.error, &statuses, &funcs, lumina::getTimeoutMs()))
+				{
+					result.success = false;
+				}
+				else
+				{
+					size_t fi = 0;
+					for (size_t i = 0; i < statuses.size() && i < addrs.size(); ++i)
+					{
+						if (statuses[i] != lumina::OperationResult::Ok)
+							continue;
+						if (fi >= funcs.size())
+							break;
+						cachePulledFunction(result.cacheUpdates, addrs[i], funcs[fi++]);
+						result.found++;
+					}
+					result.success = true;
+				}
+			}
 		}
-		hashes.push_back(computeFunctionHash(m_data, it->second));
-		addrs.push_back(e->address);
-	}
-	if (hashes.empty()) { QMessageBox::information(this, "Lumina Pull", "No functions resolved."); return; }
-
-	const auto hello = lumina::build_hello_request();
-	const auto pull = lumina::build_pull_request(0, hashes);
-
-	auto cli = lumina::createConfiguredClient(this);
-	QString err;
-	std::vector<lumina::OperationResult> statuses;
-	std::vector<lumina::PulledFunction> funcs;
-	if (!cli->helloAndPull(hello, pull, &err, &statuses, &funcs, lumina::getTimeoutMs())) {
-		QMessageBox::critical(this, "Lumina Pull", QString("Failed: %1").arg(err));
-		return;
-	}
-
-	// Map results: statuses length == queries; funcs contains only found entries in order
-	size_t fi = 0, found = 0;
-	for (size_t i = 0; i < statuses.size() && i < addrs.size(); ++i) {
-		if (statuses[i] == lumina::OperationResult::Ok) {
-			if (fi >= funcs.size()) break;
-			cachePulledFunction(m_pullCache, addrs[i], funcs[fi++]);
-			found++;
+		catch (const std::exception& exception)
+		{
+			result.success = false;
+			result.error = QString::fromStdString(exception.what());
 		}
-	}
 
-	QMessageBox::information(this, "Lumina Pull",
-		QString("Requested %1 function(s).\nFound %2; updated cache for selected rows.%3")
-			.arg(hashes.size())
-			.arg(found)
-			.arg(skippedCount > 0 ? QString("\nSkipped %1 function(s) due to the reliability filter.").arg(skippedCount) : QString()));
-	if (m_model)
-		m_model->notifyPullCacheChanged();
+		BinaryNinja::ExecuteOnMainThread([widget, task, result = std::move(result)]() mutable {
+			task->Finish();
+			if (!widget)
+				return;
+
+			widget->setBusyState(false);
+			if (!result.success)
+			{
+				QMessageBox::critical(widget, "Lumina Pull", QString("Failed: %1").arg(result.error));
+				return;
+			}
+
+			for (auto& [addr, cache] : result.cacheUpdates)
+				widget->m_pullCache[addr] = std::move(cache);
+
+			if (widget->m_model)
+				widget->m_model->notifyPullCacheChanged();
+
+			QMessageBox::information(widget, "Lumina Pull",
+				QString("Requested %1 function(s).\nFound %2; updated cache for selected rows.%3")
+					.arg(result.requested)
+					.arg(result.found)
+					.arg(result.skipped > 0 ? QString("\nSkipped %1 function(s) due to the reliability filter.").arg(result.skipped) : QString()));
+		});
+	}).detach();
 }
 
 void GamayunWidget::pullAllLumina()
 {
+	if (!ensureIdle("Lumina"))
+		return;
 	if (!m_data) { QMessageBox::warning(this, "Lumina Pull All", "No BinaryView"); return; }
 
 	auto functions = m_data->GetAnalysisFunctionList();
 	if (functions.empty()) { QMessageBox::information(this, "Lumina Pull All", "No functions in binary."); return; }
 
-	// Check if debug mode is enabled
-	const char* debugEnv = std::getenv("LUMINA_DEBUG");
-	bool debugMode = (debugEnv && *debugEnv == '1');
+	QPointer<GamayunWidget> widget(this);
+	BinaryViewRef data = m_data;
+	auto task = BinaryNinja::Ref<BinaryNinja::BackgroundTask>(new BinaryNinja::BackgroundTask("Gamayun: Pulling all Lumina metadata", false));
+	setBusyState(true);
 
-	// Build hash list for ALL functions in the binary
-	std::vector<std::array<uint8_t,16>> hashes;
-	std::vector<uint64_t> addrs;
-	std::vector<std::string> names;
-	std::vector<FunctionRef> funcRefs;
-	hashes.reserve(functions.size());
-	addrs.reserve(functions.size());
-	names.reserve(functions.size());
-	funcRefs.reserve(functions.size());
+	std::thread([widget, task, data]() mutable {
+		PullResult result;
+		try
+		{
+			auto functions = data->GetAnalysisFunctionList();
+			const char* debugEnv = std::getenv("LUMINA_DEBUG");
+			bool debugMode = (debugEnv && *debugEnv == '1');
 
-	size_t skippedCount = 0;
-	for (auto& func : functions) {
-		// Apply pull filter to skip functions unlikely to produce reliable hashes
-		auto pullFilter = lumina::shouldSkipPull(m_data, func);
-		if (pullFilter.shouldSkip) {
-			skippedCount++;
-			if (debugMode) {
-				std::string name = func->GetSymbol() ? func->GetSymbol()->GetShortName() : "<unnamed>";
-				BinaryNinja::LogDebug("[Lumina] Pull filter: skipping %s - %s", name.c_str(), pullFilter.reason.c_str());
+			std::vector<std::array<uint8_t, 16>> hashes;
+			std::vector<uint64_t> addrs;
+			std::vector<std::string> names;
+			hashes.reserve(functions.size());
+			addrs.reserve(functions.size());
+			names.reserve(functions.size());
+
+			for (size_t i = 0; i < functions.size(); ++i)
+			{
+				task->SetProgressText("Gamayun: Preparing Lumina queries for all functions");
+				auto& func = functions[i];
+				auto pullFilter = lumina::shouldSkipPull(data, func);
+				if (pullFilter.shouldSkip)
+				{
+					result.skipped++;
+					if (debugMode)
+					{
+						std::string name = func->GetSymbol() ? func->GetSymbol()->GetShortName() : "<unnamed>";
+						BinaryNinja::LogDebug("[Lumina] Pull filter: skipping %s - %s", name.c_str(), pullFilter.reason.c_str());
+					}
+					continue;
+				}
+
+				auto hash = computeFunctionHash(data, func);
+				bool isZero = true;
+				for (auto byte : hash)
+				{
+					if (byte != 0)
+					{
+						isZero = false;
+						break;
+					}
+				}
+				if (isZero)
+					continue;
+
+				hashes.push_back(hash);
+				addrs.push_back(func->GetStart());
+				names.push_back(func->GetSymbol() ? func->GetSymbol()->GetFullName() : "<unnamed>");
 			}
-			continue;
+
+			result.requested = hashes.size();
+			if (result.skipped > 0)
+				BinaryNinja::LogInfo("[Lumina] Pull filter: skipped %zu function(s)", result.skipped);
+
+			if (hashes.empty())
+			{
+				result.success = true;
+			}
+			else
+			{
+				if (debugMode)
+				{
+					lumina::debug::dumpPullRequest("binja_pull_request.txt", hashes, addrs, names);
+					BinaryNinja::LogInfo("[Lumina Debug] Dumped pull request to %s/binja_pull_request.txt",
+						lumina::debug::getDebugDir().c_str());
+				}
+
+				BinaryNinja::LogInfo("[Lumina] Pull All: querying %zu functions...", hashes.size());
+				task->SetProgressText("Gamayun: Fetching Lumina metadata for all functions");
+				const auto hello = lumina::build_hello_request();
+				const auto pull = lumina::build_pull_request(0, hashes);
+				auto cli = lumina::createConfiguredClient(nullptr);
+				std::vector<lumina::OperationResult> statuses;
+				std::vector<lumina::PulledFunction> pulledFuncs;
+				if (!cli->helloAndPull(hello, pull, &result.error, &statuses, &pulledFuncs, lumina::getTimeoutMs()))
+				{
+					result.success = false;
+				}
+				else
+				{
+					size_t fi = 0;
+					for (size_t i = 0; i < statuses.size() && i < addrs.size(); ++i)
+					{
+						if (statuses[i] != lumina::OperationResult::Ok)
+							continue;
+						if (fi >= pulledFuncs.size())
+							break;
+						cachePulledFunction(result.cacheUpdates, addrs[i], pulledFuncs[fi++]);
+						result.found++;
+					}
+					result.success = true;
+				}
+			}
+		}
+		catch (const std::exception& exception)
+		{
+			result.success = false;
+			result.error = QString::fromStdString(exception.what());
 		}
 
-		auto hash = computeFunctionHash(m_data, func);
-		// Skip zero hashes (failed pattern generation)
-		bool isZero = true;
-		for (auto b : hash) { if (b != 0) { isZero = false; break; } }
-		if (isZero) continue;
+		BinaryNinja::ExecuteOnMainThread([widget, task, result = std::move(result)]() mutable {
+			task->Finish();
+			if (!widget)
+				return;
 
-		hashes.push_back(hash);
-		addrs.push_back(func->GetStart());
-		std::string name = func->GetSymbol() ? func->GetSymbol()->GetFullName() : "<unnamed>";
-		names.push_back(name);
-		funcRefs.push_back(func);
-	}
+			widget->setBusyState(false);
+			if (!result.success)
+			{
+				QMessageBox::critical(widget, "Lumina Pull All", QString("Failed: %1").arg(result.error));
+				return;
+			}
 
-	if (skippedCount > 0) {
-		BinaryNinja::LogInfo("[Lumina] Pull filter: skipped %zu function(s)", skippedCount);
-	}
+			for (auto& [addr, cache] : result.cacheUpdates)
+				widget->m_pullCache[addr] = std::move(cache);
 
-	if (hashes.empty()) { QMessageBox::information(this, "Lumina Pull All", "No valid function hashes."); return; }
+			BinaryNinja::LogInfo("[Lumina] Pull All complete: %zu queried, %zu found", result.requested, result.found);
+			if (widget->m_model)
+				widget->m_model->notifyPullCacheChanged();
 
-	// Dump debug info if enabled
-	if (debugMode) {
-		lumina::debug::dumpPullRequest("binja_pull_request.txt", hashes, addrs, names);
-		BinaryNinja::LogInfo("[Lumina Debug] Dumped pull request to %s/binja_pull_request.txt",
-			lumina::debug::getDebugDir().c_str());
-	}
-
-	BinaryNinja::LogInfo("[Lumina] Pull All: querying %zu functions...", hashes.size());
-
-	const auto hello = lumina::build_hello_request();
-	const auto pull = lumina::build_pull_request(0, hashes);
-
-	auto cli = lumina::createConfiguredClient(this);
-	QString err;
-	std::vector<lumina::OperationResult> statuses;
-	std::vector<lumina::PulledFunction> pulledFuncs;
-
-	int timeout = lumina::getTimeoutMs();
-	if (!cli->helloAndPull(hello, pull, &err, &statuses, &pulledFuncs, timeout)) {
-		QMessageBox::critical(this, "Lumina Pull All", QString("Failed: %1").arg(err));
-		return;
-	}
-
-	// Map results to cache
-	size_t fi = 0, found = 0;
-	for (size_t i = 0; i < statuses.size() && i < addrs.size(); ++i) {
-		if (statuses[i] == lumina::OperationResult::Ok) {
-			if (fi >= pulledFuncs.size()) break;
-			cachePulledFunction(m_pullCache, addrs[i], pulledFuncs[fi++]);
-			found++;
-		}
-	}
-
-	BinaryNinja::LogInfo("[Lumina] Pull All complete: %zu queried, %zu found", hashes.size(), found);
-	if (m_model)
-		m_model->notifyPullCacheChanged();
-	QMessageBox::information(this, "Lumina Pull All",
-		QString("Queried %1 functions.\nFound metadata for %2.\nUse 'Apply' to apply changes.")
-			.arg(hashes.size()).arg(found));
+			QMessageBox::information(widget, "Lumina Pull All",
+				QString("Queried %1 functions.\nFound metadata for %2.\nUse 'Apply' to apply changes.")
+					.arg(result.requested)
+					.arg(result.found));
+		});
+	}).detach();
 }
 
 void GamayunWidget::inspectPulledSelected()
@@ -597,6 +757,8 @@ void GamayunWidget::logPulledSelected()
 
 void GamayunWidget::applyPulledToSelected()
 {
+	if (!ensureIdle("apply"))
+		return;
 	if (!m_data) return;
 	auto selected = m_model->getSelectedEntries();
 	if (selected.empty()) {
@@ -604,38 +766,71 @@ void GamayunWidget::applyPulledToSelected()
 		return;
 	}
 
-	auto functionsByAddress = buildFunctionMap(m_data);
+	std::vector<uint64_t> selectedAddresses;
+	selectedAddresses.reserve(selected.size());
+	for (auto* entry : selected)
+		selectedAddresses.push_back(entry->address);
 
-	size_t applied = 0, missing = 0;
-	lumina::ApplyStats stats;
+	QPointer<GamayunWidget> widget(this);
+	BinaryViewRef data = m_data;
+	auto pullCache = m_pullCache;
+	auto task = BinaryNinja::Ref<BinaryNinja::BackgroundTask>(new BinaryNinja::BackgroundTask("Gamayun: Applying selected Lumina metadata", false));
+	setBusyState(true);
 
-	for (auto* e : selected) {
-		auto cit = m_pullCache.find(e->address);
-		if (cit == m_pullCache.end() || !cit->second.have) { missing++; continue; }
-		auto fit = functionsByAddress.find(e->address);
-		if (fit == functionsByAddress.end()) { missing++; continue; }
+	std::thread([widget, task, data, pullCache = std::move(pullCache), selectedAddresses = std::move(selectedAddresses)]() mutable {
+		ApplyResult result;
+		try
+		{
+			auto functionsByAddress = buildFunctionMap(data);
+			for (size_t i = 0; i < selectedAddresses.size(); ++i)
+			{
+				task->SetProgressText("Gamayun: Applying selected Lumina metadata");
+				auto cacheIt = pullCache.find(selectedAddresses[i]);
+				if (cacheIt == pullCache.end() || !cacheIt->second.have)
+				{
+					result.missing++;
+					continue;
+				}
 
-		if (lumina::applyMetadata(fit->second, cit->second, stats)) {
-			applied++;
+				auto funcIt = functionsByAddress.find(selectedAddresses[i]);
+				if (funcIt == functionsByAddress.end())
+				{
+					result.missing++;
+					continue;
+				}
+
+				if (lumina::applyMetadata(funcIt->second, cacheIt->second, result.stats))
+					result.applied++;
+			}
 		}
-	}
+		catch (const std::exception& exception)
+		{
+			BinaryNinja::LogError("[Lumina] Apply failed: %s", exception.what());
+		}
 
-	// Refresh the table to show updated names
-	if (applied > 0) {
-		refreshMetadata();
-	}
+		BinaryNinja::ExecuteOnMainThread([widget, task, result = std::move(result)]() mutable {
+			task->Finish();
+			if (!widget)
+				return;
 
-	const QString details = formatApplyStatsDetails(stats);
+			widget->setBusyState(false);
+			if (result.applied > 0)
+				widget->refreshMetadata();
 
-	QMessageBox::information(this, "Apply Pulled",
-		QString("Applied metadata to %1 function(s)%2; %3 missing cached data.")
-			.arg(applied)
-			.arg(details.isEmpty() ? "" : QString(" (%1)").arg(details))
-			.arg(missing));
+			const QString details = formatApplyStatsDetails(result.stats);
+			QMessageBox::information(widget, "Apply Pulled",
+				QString("Applied metadata to %1 function(s)%2; %3 missing cached data.")
+					.arg(result.applied)
+					.arg(details.isEmpty() ? "" : QString(" (%1)").arg(details))
+					.arg(result.missing));
+		});
+	}).detach();
 }
 
 void GamayunWidget::applyPulledToAll()
 {
+	if (!ensureIdle("apply"))
+		return;
 	if (!m_data) return;
 
 	if (m_pullCache.empty()) {
@@ -643,42 +838,68 @@ void GamayunWidget::applyPulledToAll()
 		return;
 	}
 
-	auto functionsByAddress = buildFunctionMap(m_data);
+	QPointer<GamayunWidget> widget(this);
+	BinaryViewRef data = m_data;
+	auto pullCache = m_pullCache;
+	auto task = BinaryNinja::Ref<BinaryNinja::BackgroundTask>(new BinaryNinja::BackgroundTask("Gamayun: Applying all Lumina metadata", false));
+	setBusyState(true);
 
-	size_t applied = 0, skipped = 0;
-	lumina::ApplyStats stats;
+	std::thread([widget, task, data, pullCache = std::move(pullCache)]() mutable {
+		ApplyResult result;
+		try
+		{
+			auto functionsByAddress = buildFunctionMap(data);
+			for (const auto& [addr, cache] : pullCache)
+			{
+				task->SetProgressText("Gamayun: Applying all Lumina metadata");
+				if (!cache.have)
+				{
+					result.missing++;
+					continue;
+				}
 
-	for (const auto& [addr, cache] : m_pullCache) {
-		if (!cache.have) { skipped++; continue; }
-		auto fit = functionsByAddress.find(addr);
-		if (fit == functionsByAddress.end()) { skipped++; continue; }
+				auto funcIt = functionsByAddress.find(addr);
+				if (funcIt == functionsByAddress.end())
+				{
+					result.missing++;
+					continue;
+				}
 
-		if (lumina::applyMetadata(fit->second, cache, stats)) {
-			applied++;
+				if (lumina::applyMetadata(funcIt->second, cache, result.stats))
+					result.applied++;
+			}
 		}
-	}
+		catch (const std::exception& exception)
+		{
+			BinaryNinja::LogError("[Lumina] Apply All failed: %s", exception.what());
+		}
 
-	// Refresh the table to show updated names
-	if (applied > 0) {
-		refreshMetadata();
-	}
+		BinaryNinja::ExecuteOnMainThread([widget, task, result = std::move(result)]() mutable {
+			task->Finish();
+			if (!widget)
+				return;
 
-	const QString details = formatApplyStatsDetails(stats);
+			widget->setBusyState(false);
+			if (result.applied > 0)
+				widget->refreshMetadata();
 
-	BinaryNinja::LogInfo(
-		"[Lumina] Applied metadata to %zu functions (%zu names, %zu function comments, %zu function types, %zu address comments, %zu stack vars, %zu tags)",
-		applied,
-		stats.namesApplied,
-		stats.functionCommentsApplied,
-		stats.functionTypesApplied,
-		stats.addressCommentsApplied,
-		stats.stackVariablesApplied,
-		stats.tagsApplied);
+			const QString details = formatApplyStatsDetails(result.stats);
+			BinaryNinja::LogInfo(
+				"[Lumina] Applied metadata to %zu functions (%zu names, %zu function comments, %zu function types, %zu address comments, %zu stack vars, %zu tags)",
+				result.applied,
+				result.stats.namesApplied,
+				result.stats.functionCommentsApplied,
+				result.stats.functionTypesApplied,
+				result.stats.addressCommentsApplied,
+				result.stats.stackVariablesApplied,
+				result.stats.tagsApplied);
 
-	QMessageBox::information(this, "Apply All",
-		QString("Applied Lumina metadata to %1 function(s)%2.")
-			.arg(applied)
-			.arg(details.isEmpty() ? "" : QString(" (%1)").arg(details)));
+			QMessageBox::information(widget, "Apply All",
+				QString("Applied Lumina metadata to %1 function(s)%2.")
+					.arg(result.applied)
+					.arg(details.isEmpty() ? "" : QString(" (%1)").arg(details)));
+		});
+	}).detach();
 }
 
 void GamayunWidget::batchDiffAndApplySelected()

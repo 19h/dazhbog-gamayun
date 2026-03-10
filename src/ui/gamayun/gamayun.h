@@ -37,6 +37,7 @@ class GamayunModel : public QAbstractTableModel
 public:
 	GamayunModel(QWidget* parent, BinaryViewRef data);
 
+	void setBinaryView(BinaryViewRef data);
 	void setPullCache(const std::unordered_map<uint64_t, lumina::PullCacheEntry>* pullCache);
 	void notifyPullCacheChanged();
 	void refresh();
@@ -66,6 +67,7 @@ class GamayunTableView : public QTableView
 public:
 	GamayunTableView(QWidget* parent, ViewFrame* frame, BinaryViewRef data);
 
+	void setContext(ViewFrame* frame, BinaryViewRef data);
 	void updateFont();
 
 protected:
@@ -96,6 +98,7 @@ class GamayunWidget : public SidebarWidget
 
 	std::unordered_map<uint64_t, lumina::PullCacheEntry> m_pullCache;
 	bool m_hasComputedInitialHashes = false;
+	bool m_busy = false;
 
 public:
 	GamayunWidget(ViewFrame* frame, BinaryViewRef data);
@@ -116,6 +119,8 @@ public Q_SLOTS:
 
 private:
 	void computeFunctionHashesForAllFunctions();
+	void setBusyState(bool busy);
+	bool ensureIdle(const QString& action);
 };
 
 class GamayunWidgetType : public SidebarWidgetType

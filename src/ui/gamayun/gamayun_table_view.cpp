@@ -48,6 +48,14 @@ GamayunTableView::GamayunTableView(QWidget* parent, ViewFrame* frame, BinaryView
 	connect(this, &QTableView::clicked, this, &GamayunTableView::onRowClicked);
 }
 
+void GamayunTableView::setContext(ViewFrame* frame, BinaryViewRef data)
+{
+	m_frame = frame;
+	m_data = data;
+	if (m_model)
+		m_model->setBinaryView(data);
+}
+
 void GamayunTableView::updateFont()
 {
 	setFont(getMonospaceFont(this));
