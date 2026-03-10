@@ -684,13 +684,45 @@ void FunctionMetadataSidebarWidget::pushSelectedLumina()
 
 	std::vector<lumina::EncodedFunction> funcs;
 	funcs.reserve(selected.size());
+	size_t skippedCount = 0;
+	std::vector<std::string> skippedNames;
+
 	for (auto* e : selected) {
 		auto it = fbyAddr.find(e->address);
 		if (it == fbyAddr.end()) continue;
+
+		// Check if this function should be skipped to prevent Lumina pollution
+		lumina::PushFilterResult filter = lumina::shouldSkipPush(m_data, it->second);
+		if (filter.shouldSkip) {
+			skippedCount++;
+			std::string funcName = it->second->GetSymbol()
+				? it->second->GetSymbol()->GetShortName()
+				: "<unnamed>";
+			skippedNames.push_back(funcName);
+			BinaryNinja::LogWarn("[Lumina] Skipping push for %s: %s (size=%zu, movabs=%d)",
+				funcName.c_str(), filter.reason.c_str(),
+				filter.funcSize, filter.movabsCount);
+			continue;
+		}
+
 		funcs.push_back(encodeOneFunction(m_data, it->second));
 	}
 
-	if (funcs.empty()) { QMessageBox::information(this, "Lumina Push", "No functions resolved."); return; }
+	if (funcs.empty()) {
+		QString msg = "No functions to push.";
+		if (skippedCount > 0) {
+			msg += QString("\n\n%1 function(s) were skipped to prevent Lumina pollution:\n").arg(skippedCount);
+			for (size_t i = 0; i < std::min(skippedNames.size(), (size_t)5); i++) {
+				msg += QString("  - %1\n").arg(QString::fromStdString(skippedNames[i]));
+			}
+			if (skippedNames.size() > 5) {
+				msg += QString("  ... and %1 more\n").arg(skippedNames.size() - 5);
+			}
+			msg += "\n(Functions with size > 4500 bytes or > 4 movabs instructions are filtered)";
+		}
+		QMessageBox::information(this, "Lumina Push", msg);
+		return;
+	}
 
 	// Build legacy Hello + PushMetadata payloads
 	auto hello = lumina::encode_hello_payload(5);
@@ -715,9 +747,19 @@ void FunctionMetadataSidebarWidget::pushSelectedLumina()
 	// Report: 1=new unique, 0=updated (per your server)
 	size_t news = 0, updates = 0;
 	for (uint32_t s : statuses) (s > 0 ? news : updates)++;
-	QMessageBox::information(this, "Lumina Push",
-		QString("Pushed %1 function(s): %2 new, %3 updated")
-			.arg(statuses.size()).arg(news).arg(updates));
+
+	QString msg = QString("Pushed %1 function(s): %2 new, %3 updated")
+		.arg(statuses.size()).arg(news).arg(updates);
+	if (skippedCount > 0) {
+		msg += QString("\n\n%1 function(s) were skipped (likely incorrect hash):").arg(skippedCount);
+		for (size_t i = 0; i < std::min(skippedNames.size(), (size_t)3); i++) {
+			msg += QString("\n  - %1").arg(QString::fromStdString(skippedNames[i]));
+		}
+		if (skippedNames.size() > 3) {
+			msg += QString("\n  ... and %1 more").arg(skippedNames.size() - 3);
+		}
+	}
+	QMessageBox::information(this, "Lumina Push", msg);
 }
 
 void FunctionMetadataSidebarWidget::pushAllLumina()
@@ -818,7 +860,19 @@ void FunctionMetadataSidebarWidget::pullAllLumina()
 	names.reserve(functions.size());
 	funcRefs.reserve(functions.size());
 
+	size_t skippedCount = 0;
 	for (auto& func : functions) {
+		// Apply pull filter to skip PLT stubs and CRT functions
+		auto pullFilter = lumina::shouldSkipPull(m_data, func);
+		if (pullFilter.shouldSkip) {
+			skippedCount++;
+			if (debugMode) {
+				std::string name = func->GetSymbol() ? func->GetSymbol()->GetShortName() : "<unnamed>";
+				BinaryNinja::LogDebug("[Lumina] Pull filter: skipping %s - %s", name.c_str(), pullFilter.reason.c_str());
+			}
+			continue;
+		}
+
 		auto hash = compute_key(m_data, func);
 		// Skip zero hashes (failed pattern generation)
 		bool isZero = true;
@@ -830,6 +884,10 @@ void FunctionMetadataSidebarWidget::pullAllLumina()
 		std::string name = func->GetSymbol() ? func->GetSymbol()->GetFullName() : "<unnamed>";
 		names.push_back(name);
 		funcRefs.push_back(func);
+	}
+
+	if (skippedCount > 0) {
+		BinaryNinja::LogInfo("[Lumina] Pull filter: skipped %zu PLT/CRT functions", skippedCount);
 	}
 
 	if (hashes.empty()) { QMessageBox::information(this, "Lumina Pull All", "No valid function hashes."); return; }

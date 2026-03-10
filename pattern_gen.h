@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <string>
 #include <memory>
+#include <utility>
 #include "binaryninjaapi.h"
 #include <capstone/capstone.h>
 
@@ -85,12 +86,24 @@ public:
     virtual void setFunctionRange(uint64_t start, uint64_t end) {
         (void)start; (void)end;  // Default: ignore
     }
+
+    /**
+     * Set the current function chunk ranges.
+     * For IDA parity, x86/x64 near/far control-flow operands are treated as
+     * internal only when they stay inside the same chunk as the source
+     * instruction, not merely inside the overall function extent.
+     */
+    virtual void setFunctionChunks(const std::vector<std::pair<uint64_t, uint64_t>>& chunks) {
+        (void)chunks;
+    }
 };
 
 /**
  * x86/x64 mask generator
- * Masks RIP-relative memory references to external addresses.
- * NOTE: Control flow (CALL/JMP/Jcc) is NOT masked - verified with IDA.
+ * Approximates IDA's procmod-driven CalcRel masking.
+ * - Near/far control flow is chunk-aware
+ * - Direct memory forms are masked like IDA's o_mem operands
+ * - Offset-like immediates/displacements use Binary Ninja-side heuristics
  */
 class X86MaskGenerator : public ArchMaskGenerator {
 public:
@@ -107,18 +120,22 @@ public:
 
     /**
      * Set the current function's address range.
-     * This is needed to determine if RIP-relative targets are external
-     * references (should be masked) or internal references (should not be masked).
+     * Used as a fallback when chunk information is unavailable.
      */
     void setFunctionRange(uint64_t start, uint64_t end) override {
         m_funcStart = start;
         m_funcEnd = end;
     }
 
+    void setFunctionChunks(const std::vector<std::pair<uint64_t, uint64_t>>& chunks) override {
+        m_chunkRanges = chunks;
+    }
+
 private:
     bool m_is64bit;
     uint64_t m_funcStart;  // Current function start address
     uint64_t m_funcEnd;    // Current function end address
+    std::vector<std::pair<uint64_t, uint64_t>> m_chunkRanges;
     csh m_capstone;
     bool m_capstoneReady;
 
@@ -131,7 +148,8 @@ private:
  */
 class ARMMaskGenerator : public ArchMaskGenerator {
 public:
-    explicit ARMMaskGenerator(bool isThumb = false) : m_isThumb(isThumb) {}
+    explicit ARMMaskGenerator(bool isThumb = false, bool isBigEndian = false)
+        : m_isThumb(isThumb), m_isBigEndian(isBigEndian) {}
 
     InstructionMask getMask(
         BinaryNinja::BinaryView* bv,
@@ -141,8 +159,21 @@ public:
 
     std::string getName() const override { return m_isThumb ? "thumb" : "arm"; }
 
+    void setFunctionRange(uint64_t start, uint64_t end) override {
+        m_funcStart = start;
+        m_funcEnd = end;
+    }
+
+    void setFunctionChunks(const std::vector<std::pair<uint64_t, uint64_t>>& chunks) override {
+        m_chunkRanges = chunks;
+    }
+
 private:
     bool m_isThumb;
+    bool m_isBigEndian;
+    uint64_t m_funcStart = 0;
+    uint64_t m_funcEnd = 0;
+    std::vector<std::pair<uint64_t, uint64_t>> m_chunkRanges;
 };
 
 /**
@@ -151,6 +182,9 @@ private:
  */
 class ARM64MaskGenerator : public ArchMaskGenerator {
 public:
+    explicit ARM64MaskGenerator(bool isBigEndian = false);
+    ~ARM64MaskGenerator() override;
+
     InstructionMask getMask(
         BinaryNinja::BinaryView* bv,
         uint64_t addr,
@@ -158,6 +192,35 @@ public:
     ) override;
 
     std::string getName() const override { return "aarch64"; }
+
+    void setFunctionRange(uint64_t start, uint64_t end) override {
+        m_funcStart = start;
+        m_funcEnd = end;
+        m_trackedAddrValid.fill(false);
+        m_trackedAddr.fill(0);
+        m_trackedAddrTtl.fill(0);
+        m_trackedChunkStart.fill(0);
+        m_trackedChunkEnd.fill(0);
+    }
+
+    void setFunctionChunks(const std::vector<std::pair<uint64_t, uint64_t>>& chunks) override {
+        m_chunkRanges = chunks;
+    }
+
+private:
+    bool m_isBigEndian;
+    uint64_t m_funcStart = 0;
+    uint64_t m_funcEnd = 0;
+    std::vector<std::pair<uint64_t, uint64_t>> m_chunkRanges;
+    csh m_capstone = 0;
+    bool m_capstoneReady = false;
+    std::array<bool, 32> m_trackedAddrValid{};
+    std::array<uint64_t, 32> m_trackedAddr{};
+    std::array<uint8_t, 32> m_trackedAddrTtl{};
+    std::array<uint64_t, 32> m_trackedChunkStart{};
+    std::array<uint64_t, 32> m_trackedChunkEnd{};
+
+    bool initCapstone();
 };
 
 /**
@@ -245,5 +308,54 @@ PatternResult computePattern(
     BinaryViewRef bv,
     FunctionRef func
 );
+
+/**
+ * Push filtering heuristic result
+ */
+struct PushFilterResult {
+    bool shouldSkip;        // True if function should NOT be pushed
+    size_t funcSize;        // Function size in bytes
+    int movabsCount;        // Number of movabs instructions
+    std::string reason;     // Reason for skipping (if shouldSkip=true)
+};
+
+/**
+ * Determine if a function should be excluded from Lumina push operations.
+ *
+ * Uses heuristics to detect functions that are likely to have incorrect
+ * CalcRel hashes compared to IDA, preventing database pollution.
+ *
+ * Heuristic: (size > 4500) OR (movabs > 4)
+ *
+ * This catches known-problematic functions:
+ * - Large functions (>4500 bytes) with complex control flow
+ * - Functions using many movabs instructions (>4)
+ *
+ * @param bv Binary view
+ * @param func Function to check
+ * @return PushFilterResult with skip decision and stats
+ */
+PushFilterResult shouldSkipPush(BinaryViewRef bv, FunctionRef func);
+
+/**
+ * Pull filtering heuristic result
+ */
+struct PullFilterResult {
+    bool shouldSkip;        // True if function should NOT be queried
+    std::string reason;     // Reason for skipping (if shouldSkip=true)
+};
+
+/**
+ * Determine if a function should be excluded from Lumina pull operations.
+ *
+ * Filters out functions that IDA doesn't push to Lumina:
+ * - PLT stubs (in .plt or .plt.got sections)
+ * - CRT functions (_init, _fini, frame_dummy, etc.)
+ *
+ * @param bv Binary view
+ * @param func Function to check
+ * @return PullFilterResult with skip decision and reason
+ */
+PullFilterResult shouldSkipPull(BinaryViewRef bv, FunctionRef func);
 
 } // namespace lumina

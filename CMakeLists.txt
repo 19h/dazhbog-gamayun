@@ -10,14 +10,21 @@ file(GLOB SOURCES
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-# Use Qt 6.10.1 to match Binary Ninja's Qt version
-set(QT6_BUILD_PATH "/media/null/ares/qt/6.10.1/qtbase" CACHE PATH "Qt 6.10.1 build path")
+if(APPLE)
+    set(DEFAULT_QT6_ROOT_PATH "/Users/int/Qt-6.6.1")
+else()
+    set(DEFAULT_QT6_ROOT_PATH "/media/null/ares/qt/6.10.1/qtbase")
+endif()
 
-# Prioritize Qt 6.10.1 over system Qt
-list(PREPEND CMAKE_PREFIX_PATH "${QT6_BUILD_PATH}/lib/cmake")
+set(QT6_ROOT_PATH "${DEFAULT_QT6_ROOT_PATH}" CACHE PATH "Qt 6 installation root")
 
-# Find Qt 6.10 - this will use headers and libraries from the same version
-find_package(Qt6 6.10 COMPONENTS Core Gui Widgets Network REQUIRED)
+if(EXISTS "${QT6_ROOT_PATH}/lib/cmake")
+    list(PREPEND CMAKE_PREFIX_PATH "${QT6_ROOT_PATH}/lib/cmake")
+elseif(EXISTS "${QT6_ROOT_PATH}")
+    list(PREPEND CMAKE_PREFIX_PATH "${QT6_ROOT_PATH}")
+endif()
+
+find_package(Qt6 6.6 COMPONENTS Core Gui Widgets Network REQUIRED)
 message(STATUS "Using Qt ${Qt6_VERSION} from ${Qt6_DIR}")
 
 find_path(CAPSTONE_INCLUDE_DIR capstone/capstone.h)
@@ -75,6 +82,16 @@ target_compile_definitions(function_metadata_sidebar PRIVATE
     QT_NO_VERSION_TAGGING
     FMT_USE_CONSTEVAL=0
     FMT_HEADER_ONLY=1)
+
+if(APPLE)
+    set(BN_MACOS_RPATH "@executable_path")
+    set(BN_QT_RPATH "@executable_path/../Frameworks")
+    set_target_properties(function_metadata_sidebar PROPERTIES
+        BUILD_WITH_INSTALL_RPATH ON
+        BUILD_RPATH "${BN_MACOS_RPATH};${BN_QT_RPATH}"
+        INSTALL_RPATH "${BN_MACOS_RPATH};${BN_QT_RPATH}"
+        INSTALL_RPATH_USE_LINK_PATH FALSE)
+endif()
 
 set_target_properties(function_metadata_sidebar PROPERTIES
     CXX_STANDARD 20
